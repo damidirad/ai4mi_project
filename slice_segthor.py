@@ -34,6 +34,7 @@ from typing import Callable
 import nrrd  # pip install pynrrd
 import numpy as np
 import nibabel as nib
+from scipy.ndimage import zoom
 from skimage.io import imsave
 from skimage.transform import resize
 
@@ -178,8 +179,19 @@ def build_gt_from_segnrrd(seg_path: Path, ct_shape: tuple[int, int, int]) -> np.
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
+def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
+                    target_spacing: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray]:
+    zoom_factors = tuple(s / t for s, t in zip(spacing, target_spacing))
+
+    res_ct = zoom(ct, zoom_factors, order=1)
+    res_gt = zoom(gt, zoom_factors, order=0)
+
+    return res_ct, res_gt
+
+
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False) -> tuple[float, float, float]:
+                  test_mode: bool = False, resample: bool = False,
+                  target_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -200,6 +212,10 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         assert sanity_gt(gt, ct)
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
+
+    if resample:
+        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
+        z = ct.shape[2]
 
     norm_ct: np.ndarray = norm_arr(ct)
 
@@ -231,6 +247,13 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
                 imsave(str(save_path / filename), data)
 
     return dx, dy, dz
+
+
+def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float, float]:
+    spacings = [nib.load(str(src_path / "train" / id_ / f"{id_}.nii.gz")).header.get_zooms()
+               for id_ in ids]
+
+    return tuple(np.median(np.asarray(spacings), axis=0).tolist())
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
@@ -267,6 +290,15 @@ def main(args: argparse.Namespace):
     test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
+    target_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    if args.resample:
+        if args.target_spacing:
+            target_spacing = tuple(args.target_spacing)
+        else:
+            target_spacing = compute_median_spacing(training_ids, src_path)
+        print(f"Resampling to target spacing {target_spacing} "
+             f"({'Median of training set' if not args.target_spacing else 'user-provided'})")
+
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
     split_ids: list[str]
@@ -278,7 +310,9 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
-                                 test_mode=mode == 'test')
+                                 test_mode=mode == 'test',
+                                 resample=args.resample,
+                                 target_spacing=target_spacing)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -303,6 +337,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
+    parser.add_argument('--resample', action='store_true',
+                        help="Resample the CT/GT volumes to a common voxel spacing before slicing.")
+    parser.add_argument('--target_spacing', type=float, nargs=3, default=None,
+                        help="Target (dx, dy, dz) spacing in mm, used when --resample is set. "
+                             "If omitted, uses the median training-set spacing per axis")
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
