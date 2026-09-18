@@ -53,14 +53,14 @@ NUM_CLASSES: int = len(CLASS_ORDER)
 LABEL_STEP: int = 255 // (NUM_CLASSES - 1)  # 63, matches the original encoding
 
 
-def norm_arr(img: np.ndarray) -> np.ndarray:
-    casted = img.astype(np.float32)
-    shifted = casted - casted.min()
-    norm = shifted / shifted.max()
-    res = 255 * norm
+# Clip HU values to a soft-tissue/mediastinum window before rescaling to uint8
+HU_CLIP_MIN: float = -400.0
+HU_CLIP_MAX: float = 400.0
 
-    assert 0 == res.min(), res.min()
-    assert res.max() == 255, res.max()
+
+def norm_arr(img: np.ndarray) -> np.ndarray:
+    clipped = np.clip(img.astype(np.float32), HU_CLIP_MIN, HU_CLIP_MAX)
+    res = 255 * (clipped - HU_CLIP_MIN) / (HU_CLIP_MAX - HU_CLIP_MIN)
 
     return res.astype(np.uint8)
 
