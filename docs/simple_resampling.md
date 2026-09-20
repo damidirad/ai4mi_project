@@ -94,6 +94,14 @@ Run all preprocessing tests with:
 ai4mi/bin/python -m unittest discover -s tests -p 'test_simple_resampling.py' -v
 ```
 
+### Real-data smoke test on Snellius
+
+`tests/smoke_simple_resampling.py` was run successfully on Snellius using three patients: two for training and one for validation. The script used training-derived X/Y spacing with resampling enabled and did not modify the original data.
+
+It verified the generated PNG sizes, dtypes, label values, slice counts, stored spacings, logged target spacing, and successfully loaded batches from both train and validation splits using the existing dataset pipeline.
+
+The run completed with `PASS`. Outputs and `preprocessing.log` were retained for inspection. No ENet training was performed.
+
 ## Implementation reference: changes in `slice_segthor.py`
 
 The interpolation settings are explained under commit 3. This table summarizes each affected function and its purpose.
