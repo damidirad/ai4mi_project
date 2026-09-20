@@ -191,7 +191,7 @@ def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float,
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, resample: bool = False,
-                  target_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> tuple[float, float, float]:
+                  target_spacing: tuple[float, float] | None = None) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -200,6 +200,22 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     # dx, dy, dz = nib_obj.header.get_zooms()
     x, y, z = ct.shape
     dx, dy, dz = nib_obj.header.get_zooms()
+
+    if resample:
+        validate_spacing(
+            (dx, dy, dz),
+            dimensions=3,
+            name=f"Source spacing for {id_}",
+        )
+
+        if target_spacing is None:
+            raise ValueError("Target X/Y spacing is required when resampling")
+
+        target_dx, target_dy = validate_spacing(
+            target_spacing,
+            dimensions=2,
+            name="Target X/Y spacing",
+        )
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
@@ -214,7 +230,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         gt = np.zeros_like(ct, dtype=np.uint8)
 
     if resample:
-        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
+        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), (target_dx, target_dy, dz))
         z = ct.shape[2]
 
     norm_ct: np.ndarray = norm_arr(ct)
@@ -249,11 +265,39 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     return dx, dy, dz
 
 
-def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float, float]:
-    spacings = [nib.load(str(src_path / "train" / id_ / f"{id_}.nii.gz")).header.get_zooms()
-               for id_ in ids]
+def validate_spacing(spacing, *, dimensions: int, name: str) -> tuple[float, ...]:
+    values = np.asarray(spacing, dtype=np.float64)
 
-    return tuple(np.median(np.asarray(spacings), axis=0).tolist())
+    if values.shape != (dimensions,):
+        raise ValueError(f"{name} must contain {dimensions} values")
+
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValueError(f"{name} must contain only finite, positive values")
+
+    return tuple(float(value) for value in values)
+
+
+def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float]:
+    if not ids:
+        raise ValueError("Cannot compute target spacing from an empty training set")
+
+    spacings = []
+    for id_ in ids:
+        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
+        spacing = validate_spacing(
+            nib.load(str(ct_path)).header.get_zooms(),
+            dimensions=3,
+            name=f"Source spacing for {id_}",
+        )
+        spacings.append(spacing[:2])
+
+    median_xy = np.median(np.asarray(spacings), axis=0)
+    target_dx, target_dy = validate_spacing(
+        median_xy,
+        dimensions=2,
+        name="Training-set target spacing",
+    )
+    return target_dx, target_dy
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
@@ -290,14 +334,25 @@ def main(args: argparse.Namespace):
     test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
-    target_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    target_spacing: tuple[float, float] | None = None
+
     if args.resample:
-        if args.target_spacing:
-            target_spacing = tuple(args.target_spacing)
+        if args.target_spacing is not None:
+            target_dx, target_dy = validate_spacing(
+                args.target_spacing,
+                dimensions=2,
+                name="Manual target X/Y spacing",
+            )
+            target_spacing = (target_dx, target_dy)
+            spacing_source = "manual override"
         else:
             target_spacing = compute_median_spacing(training_ids, src_path)
-        print(f"Resampling to target spacing {target_spacing} "
-             f"({'Median of training set' if not args.target_spacing else 'user-provided'})")
+            spacing_source = "training-set median"
+
+        print(
+            f"Resampling X/Y to {target_spacing} mm "
+            f"({spacing_source}); Z spacing unchanged"
+        )
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
@@ -337,11 +392,14 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
-    parser.add_argument('--resample', action='store_true',
-                        help="Resample the CT/GT volumes to a common voxel spacing before slicing.")
-    parser.add_argument('--target_spacing', type=float, nargs=3, default=None,
-                        help="Target (dx, dy, dz) spacing in mm, used when --resample is set. "
-                             "If omitted, uses the median training-set spacing per axis")
+    parser.add_argument('--resample', action='store_true', help="Resample CT/GT in X/Y before slicing; preserve Z.")
+    parser.add_argument('--target_spacing', type=float, nargs=2, metavar=('DX', 'DY'), default=None,
+        help=(
+            "Manual target X/Y spacing in mm, used with --resample. "
+            "Values must be finite and positive. "
+            "Defaults to the median X/Y spacing of the training split."
+        ),
+    )
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
