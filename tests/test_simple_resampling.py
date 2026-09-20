@@ -1,5 +1,6 @@
 import io
 import pickle
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from PIL import Image
 
 import slice_segthor as pipeline
 
@@ -461,6 +463,112 @@ class ResampleVoxelsTests(unittest.TestCase):
             with self.subTest(source=source, target=target):
                 with self.assertRaises(ValueError):
                     pipeline.resample_voxels(ct, gt, source, target)
+
+
+class PipelineIntegrationTests(unittest.TestCase):
+    def test_saved_pngs_with_resampling_on_and_off(self):
+        depth = 135
+        spacing = (1.0, 1.0, 2.5)
+        plane = np.empty((512, 512), dtype=np.int16)
+        plane[0::2] = -1000
+        plane[1::2] = 400
+        ct = np.broadcast_to(plane[:, :, None], (512, 512, depth)).copy()
+        ct[:, :, 0] = -1000
+        ct[:, :, -1] = 400
+        gt = np.broadcast_to(
+            (np.arange(512, dtype=np.uint16) % 5).astype(np.uint8)[:, None, None],
+            ct.shape,
+        )
+        image = SimpleNamespace(
+            dataobj=ct,
+            header=SimpleNamespace(get_zooms=lambda: spacing),
+        )
+
+        # For 512 -> 256, voxel-center coordinates run from 0 to 511.
+        # Calculate expectations independently, without production helpers.
+        positions = np.linspace(0, 511, 256)
+        lower = np.floor(positions).astype(int)
+        fraction = positions - lower
+        left = np.where(lower % 2 == 0, -1000.0, 400.0)
+        right = np.where(lower % 2 == 0, 400.0, -1000.0)
+        interpolated = (left * (1 - fraction) + right * fraction).astype(np.float32)
+        resampled_pixels = (
+            255 * (np.clip(interpolated, -400, 400) + 400) / 800
+        ).astype(np.uint8)
+        resampled_labels = (np.floor(positions + 0.5).astype(int) % 5) * 63
+        baseline_labels = (np.arange(1, 512, 2) % 5) * 63
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            patient = source / "train" / "Patient_01"
+            patient.mkdir(parents=True)
+            (patient / "labels.seg.nrrd").touch()
+
+            for enabled in (False, True):
+                with self.subTest(resample=enabled):
+                    destination = Path(directory) / str(enabled)
+                    # Only input loading is mocked: all processing and PNG I/O run.
+                    with (
+                        patch.object(pipeline.nib, "load", return_value=image),
+                        patch.object(pipeline, "build_gt_from_segnrrd", return_value=gt),
+                    ):
+                        returned_spacing = pipeline.slice_patient(
+                            "Patient_01", destination, source, (256, 256),
+                            resample=enabled, target_spacing=(2.0, 2.0),
+                        )
+                    self.assertEqual(returned_spacing, spacing)
+                    names = [f"Patient_01_{z:04d}.png" for z in range(depth)]
+                    for folder in ("img", "gt"):
+                        self.assertEqual(
+                            sorted(p.name for p in (destination / folder).iterdir()), names
+                        )
+                    expected_labels = np.broadcast_to(
+                        (resampled_labels if enabled else baseline_labels)[:, None],
+                        (256, 256),
+                    )
+                    for z, name in enumerate(names):
+                        with Image.open(destination / "img" / name) as png:
+                            actual_ct = np.array(png)
+                        with Image.open(destination / "gt" / name) as png:
+                            actual_gt = np.array(png)
+                        if z in (0, depth - 1):
+                            expected_ct = np.full((256, 256), 0 if z == 0 else 255)
+                        elif enabled:
+                            expected_ct = np.broadcast_to(resampled_pixels[:, None], (256, 256))
+                        else:
+                            expected_ct = np.full((256, 256), 127)
+                        self.assertEqual(actual_ct.dtype, np.dtype("uint8"))
+                        self.assertEqual(actual_gt.dtype, np.dtype("uint8"))
+                        np.testing.assert_array_equal(actual_ct, expected_ct)
+                        np.testing.assert_array_equal(actual_gt, expected_labels)
+
+    def test_cli_defaults_and_resampling_options(self):
+        for options, enabled, target in (
+            ([], False, None),
+            (["--resample"], True, None),
+            (["--resample", "--target_spacing", "0.8", "1.2"], True, [0.8, 1.2]),
+        ):
+            with self.subTest(options=options):
+                argv = ["slice_segthor.py", "--source_dir", "source", "--dest_dir", "output"]
+                with (
+                    patch.object(sys, "argv", argv + options),
+                    patch.object(pipeline.random, "seed"),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    args = pipeline.get_args()
+                self.assertEqual(args.resample, enabled)
+                self.assertEqual(args.target_spacing, target)
+                self.assertEqual(args.shape, [256, 256])
+
+    def test_cli_rejects_old_three_value_target(self):
+        argv = [
+            "slice_segthor.py", "--source_dir", "source", "--dest_dir", "output",
+            "--resample", "--target_spacing", "1", "1", "2.5",
+        ]
+        with patch.object(sys, "argv", argv), patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                pipeline.get_args()
+        self.assertEqual(error.exception.code, 2)
 
 
 if __name__ == "__main__":
