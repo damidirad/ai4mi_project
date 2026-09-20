@@ -349,5 +349,119 @@ class TargetSpacingTests(unittest.TestCase):
                 self.assertFalse(Path(args.dest_dir).exists())
 
 
+class ResampleVoxelsTests(unittest.TestCase):
+    def test_linear_ct_preserves_fractional_values(self):
+        ct = np.broadcast_to(
+            np.array([-2, 3], dtype=np.int16)[:, None, None], (2, 2, 2)
+        ).copy()
+        gt = np.zeros(ct.shape, dtype=np.uint8)
+
+        actual, labels = pipeline.resample_voxels(
+            ct, gt, (1.0, 1.0, 2.5), (0.5, 1.0)
+        )
+
+        # Four evenly spaced centers sample the linear ramp at 0, 1/3, 2/3, 1.
+        expected = np.broadcast_to(
+            np.array([-2, -1 / 3, 4 / 3, 3])[:, None, None], (4, 2, 2)
+        )
+        self.assertEqual(actual.dtype, np.dtype("float32"))
+        np.testing.assert_allclose(actual, expected, atol=1e-6)
+        np.testing.assert_array_equal(labels, np.zeros((4, 2, 2), dtype=np.uint8))
+
+    def test_ct_and_labels_share_xy_coordinates(self):
+        # A coordinate ramp makes swaps or shifts on either axis visible.
+        x, y, z = np.indices((3, 4, 2))
+        ct = (10 * x + 2 * y + 100 * z).astype(np.int16)
+        gt = ((x + 2 * y + z) % 5).astype(np.uint8)
+
+        actual_ct, actual_gt = pipeline.resample_voxels(
+            ct, gt, (1.0, 1.5, 3.0), (0.5, 3.0)
+        )
+
+        # X grows to 6, Y shrinks to 2; endpoints stay at source centers.
+        expected_ct = (
+            10 * np.linspace(0, 2, 6)[:, None, None]
+            + 2 * np.array([0, 3])[None, :, None]
+            + 100 * np.arange(2)[None, None, :]
+        )
+        expected_gt = gt[np.ix_([0, 0, 1, 1, 2, 2], [0, 3], [0, 1])]
+        self.assertEqual(actual_ct.shape, (6, 2, 2))
+        self.assertEqual(actual_gt.shape, actual_ct.shape)
+        np.testing.assert_allclose(actual_ct, expected_ct, atol=1e-6)
+        np.testing.assert_array_equal(actual_gt, expected_gt)
+        self.assertEqual(actual_gt.dtype, gt.dtype)
+        self.assertTrue(set(np.unique(actual_gt)) <= set(np.unique(gt)))
+
+    def test_z_slices_remain_separate_and_in_order(self):
+        values = np.array([-700, 25, 900], dtype=np.int16)
+        ct = np.broadcast_to(values, (4, 5, 3)).copy()
+        gt = np.broadcast_to(np.array([1, 4, 2], dtype=np.uint8), ct.shape)
+
+        for dz in (0.5, 2.5, 7.0):
+            with self.subTest(dz=dz):
+                actual_ct, actual_gt = pipeline.resample_voxels(
+                    ct, gt, (1.0, 1.0, dz), (0.5, 0.5)
+                )
+                np.testing.assert_array_equal(
+                    actual_ct, np.broadcast_to(values, (8, 10, 3))
+                )
+                np.testing.assert_array_equal(
+                    actual_gt,
+                    np.broadcast_to(np.array([1, 4, 2]), (8, 10, 3)),
+                )
+
+    def test_identity_spacing_preserves_values_and_inputs(self):
+        ct = np.arange(-12, 12, dtype=np.int16).reshape(3, 4, 2)
+        gt = (np.arange(24) % 5).astype(np.uint8).reshape(ct.shape)
+        before_ct, before_gt = ct.copy(), gt.copy()
+
+        actual_ct, actual_gt = pipeline.resample_voxels(
+            ct, gt, (0.75, 1.25, 2.5), (0.75, 1.25)
+        )
+
+        self.assertEqual(actual_ct.dtype, np.dtype("float32"))
+        np.testing.assert_array_equal(actual_ct, before_ct)
+        np.testing.assert_array_equal(actual_gt, before_gt)
+        np.testing.assert_array_equal(ct, before_ct)
+        np.testing.assert_array_equal(gt, before_gt)
+
+    def test_rejects_invalid_array_shapes(self):
+        cases = [
+            ((2, 2), (2, 2, 2), "3D"),
+            ((2, 2, 2), (2, 2), "3D"),
+            ((2, 2, 2, 1), (2, 2, 2, 1), "3D"),
+            ((2, 3, 2), (3, 2, 2), "same shape"),
+            ((0, 2, 2), (0, 2, 2), "non-empty"),
+        ]
+        for ct_shape, gt_shape, message in cases:
+            with self.subTest(ct_shape=ct_shape, gt_shape=gt_shape):
+                with self.assertRaisesRegex(ValueError, message):
+                    pipeline.resample_voxels(
+                        np.zeros(ct_shape, dtype=np.int16),
+                        np.zeros(gt_shape, dtype=np.uint8),
+                        (1.0, 1.0, 2.5), (1.0, 1.0),
+                    )
+
+    def test_rejects_invalid_source_and_target_spacings(self):
+        ct = np.zeros((2, 2, 2), dtype=np.int16)
+        gt = np.zeros(ct.shape, dtype=np.uint8)
+        for dimensions in (2, 3):
+            for axis in range(dimensions):
+                for value in (0, -1, np.nan, np.inf, -np.inf):
+                    with self.subTest(dimensions=dimensions, axis=axis, value=value):
+                        source, target = [1.0, 1.0, 2.5], [1.0, 1.0]
+                        (source if dimensions == 3 else target)[axis] = value
+                        with self.assertRaisesRegex(ValueError, "finite, positive"):
+                            pipeline.resample_voxels(ct, gt, source, target)
+
+        for source, target in (
+            ((1.0, 1.0), (1.0, 1.0)),
+            ((1.0, 1.0, 2.5), (1.0, 1.0, 2.5)),
+        ):
+            with self.subTest(source=source, target=target):
+                with self.assertRaises(ValueError):
+                    pipeline.resample_voxels(ct, gt, source, target)
+
+
 if __name__ == "__main__":
     unittest.main()

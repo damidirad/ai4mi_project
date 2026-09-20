@@ -180,11 +180,56 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 
 def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
-                    target_spacing: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray]:
-    zoom_factors = tuple(s / t for s, t in zip(spacing, target_spacing))
+    target_spacing: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    if ct.ndim != 3 or gt.ndim != 3:
+        raise ValueError("CT and labels must both be 3D arrays")
 
-    res_ct = zoom(ct, zoom_factors, order=1)
-    res_gt = zoom(gt, zoom_factors, order=0)
+    if ct.shape != gt.shape:
+        raise ValueError(
+            f"CT and labels must have the same shape: {ct.shape} != {gt.shape}"
+        )
+
+    if any(size == 0 for size in ct.shape):
+        raise ValueError("CT and labels must have non-empty spatial dimensions")
+
+    dx, dy, _ = validate_spacing(
+        spacing,
+        dimensions=3,
+        name="Source spacing",
+    )
+    target_dx, target_dy = validate_spacing(
+        target_spacing,
+        dimensions=2,
+        name="Target X/Y spacing",
+    )
+
+    # Share the X/Y geometry; a factor of 1 leaves Z unchanged.
+    zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
+
+    # Float32 preserves fractional CT values during linear interpolation.
+    # Both calls use the same boundary and coordinate settings:
+    # constant: fill outside the input with zero.
+    # grid_mode=False: measure coordinates between voxel centers.
+    # Orders 0 and 1 do not need spline prefiltering.
+    res_ct = zoom(
+        ct.astype(np.float32, copy=False),
+        zoom_factors,
+        order=1,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+        grid_mode=False,
+    )
+
+    res_gt = zoom(
+        gt,
+        zoom_factors,
+        order=0,
+        mode="constant",
+        cval=0,
+        prefilter=False,
+        grid_mode=False,
+    )
 
     return res_ct, res_gt
 
@@ -230,8 +275,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         gt = np.zeros_like(ct, dtype=np.uint8)
 
     if resample:
-        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), (target_dx, target_dy, dz))
-        z = ct.shape[2]
+        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), (target_dx, target_dy))
 
     norm_ct: np.ndarray = norm_arr(ct)
 
