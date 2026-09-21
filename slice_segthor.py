@@ -58,11 +58,148 @@ HU_CLIP_MIN: float = -400.0
 HU_CLIP_MAX: float = 400.0
 
 
+# Intensity Normalization Old
+def norm_arr(img: np.ndarray) -> np.ndarray:
+    casted = img.astype(np.float32)
+    shifted = casted - casted.min()
+    norm = shifted / shifted.max()
+    res = 255 * norm
+    return res.astype(np.uint8)
+
+
+# Intensity Normalization New (HU-clipping)
 def norm_arr(img: np.ndarray) -> np.ndarray:
     clipped = np.clip(img.astype(np.float32), HU_CLIP_MIN, HU_CLIP_MAX)
     res = 255 * (clipped - HU_CLIP_MIN) / (HU_CLIP_MAX - HU_CLIP_MIN)
 
     return res.astype(np.uint8)
+
+###
+
+
+# Spatial Normalization
+def prepare_variant(source_dir: Path, variant_dir: Path, train_patients: list[str],
+                    val_patients: list[str], shape: tuple[int, int], resample: bool,
+                    target_spacing: tuple[float, float, float]) -> None:
+    if variant_dir.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite {variant_dir}; use --force to recreate the experiment."
+        )
+
+    for split, patients in (("train", train_patients), ("val", val_patients)):
+        for patient_id in patients:
+            patient_dir = source_dir / "train" / patient_id
+            if not patient_dir.is_dir():
+                raise FileNotFoundError(f"Patient directory does not exist: {patient_dir}")
+
+            slice_patient(
+                dest_path=variant_dir / split,
+                source_path=source_dir,
+                shape=shape,
+                test_mode=False,
+                resample=resample,
+                target_spacing=target_spacing,
+                id_=patient_id,
+            )
+
+    metadata = {
+        "train_patients": train_patients,
+        "val_patients": val_patients,
+        "resample": resample,
+        "target_spacing_mm": target_spacing,
+        "slice_shape": shape,
+    }
+    variant_dir.mkdir(parents=True, exist_ok=True)
+    (variant_dir / "experiment.json").write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+def train_variant(variant_dir: Path, result_dir: Path, args: argparse.Namespace) -> None:
+    command = [
+        sys.executable,
+        str(Path(__file__).with_name("main.py")),
+        "--dataset", "SEGTHOR",
+        "--mode", args.mode,
+        "--epochs", str(args.epochs),
+        "--data_root", str(variant_dir.parent),
+        "--dest", str(result_dir),
+        "--workers", str(args.workers),
+        "--seed", str(args.seed),
+    ]
+    if args.gpu:
+        command.append("--gpu")
+    subprocess.run(command, check=True)
+
+
+def summarize(result_dir: Path) -> dict[str, float | int | str]:
+    dice_val = np.load(result_dir / "dice_val.npy")
+    foreground_dice = dice_val[:, :, 1:].mean(axis=(1, 2))
+    best_epoch = int(np.argmax(foreground_dice))
+    return {
+        "variant": result_dir.name,
+        "best_epoch": best_epoch,
+        "best_val_foreground_dice": float(foreground_dice[best_epoch]),
+        "final_val_foreground_dice": float(foreground_dice[-1]),
+    }
+
+###
+
+
+# Voxel Resampling
+def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
+    target_spacing: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    if ct.ndim != 3 or gt.ndim != 3:
+        raise ValueError("CT and labels must both be 3D arrays")
+
+    if ct.shape != gt.shape:
+        raise ValueError(
+            f"CT and labels must have the same shape: {ct.shape} != {gt.shape}"
+        )
+
+    if any(size == 0 for size in ct.shape):
+        raise ValueError("CT and labels must have non-empty spatial dimensions")
+
+    dx, dy, _ = validate_spacing(
+        spacing,
+        dimensions=3,
+        name="Source spacing",
+    )
+    target_dx, target_dy = validate_spacing(
+        target_spacing,
+        dimensions=2,
+        name="Target X/Y spacing",
+    )
+
+    # Share the X/Y geometry; a factor of 1 leaves Z unchanged.
+    zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
+
+    # Float32 preserves fractional CT values during linear interpolation.
+    # Both calls use the same boundary and coordinate settings:
+    # constant: fill outside the input with zero.
+    # grid_mode=False: measure coordinates between voxel centers.
+    # Orders 0 and 1 do not need spline prefiltering.
+    res_ct = zoom(
+        ct.astype(np.float32, copy=False),
+        zoom_factors,
+        order=1,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+        grid_mode=False,
+    )
+
+    res_gt = zoom(
+        gt,
+        zoom_factors,
+        order=0,
+        mode="constant",
+        cval=0,
+        prefilter=False,
+        grid_mode=False,
+    )
+
+    return res_ct, res_gt
+
+###
 
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
@@ -177,61 +314,6 @@ def build_gt_from_segnrrd(seg_path: Path, ct_shape: tuple[int, int, int]) -> np.
 
 
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
-
-
-def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
-    target_spacing: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
-    if ct.ndim != 3 or gt.ndim != 3:
-        raise ValueError("CT and labels must both be 3D arrays")
-
-    if ct.shape != gt.shape:
-        raise ValueError(
-            f"CT and labels must have the same shape: {ct.shape} != {gt.shape}"
-        )
-
-    if any(size == 0 for size in ct.shape):
-        raise ValueError("CT and labels must have non-empty spatial dimensions")
-
-    dx, dy, _ = validate_spacing(
-        spacing,
-        dimensions=3,
-        name="Source spacing",
-    )
-    target_dx, target_dy = validate_spacing(
-        target_spacing,
-        dimensions=2,
-        name="Target X/Y spacing",
-    )
-
-    # Share the X/Y geometry; a factor of 1 leaves Z unchanged.
-    zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
-
-    # Float32 preserves fractional CT values during linear interpolation.
-    # Both calls use the same boundary and coordinate settings:
-    # constant: fill outside the input with zero.
-    # grid_mode=False: measure coordinates between voxel centers.
-    # Orders 0 and 1 do not need spline prefiltering.
-    res_ct = zoom(
-        ct.astype(np.float32, copy=False),
-        zoom_factors,
-        order=1,
-        mode="constant",
-        cval=0.0,
-        prefilter=False,
-        grid_mode=False,
-    )
-
-    res_gt = zoom(
-        gt,
-        zoom_factors,
-        order=0,
-        mode="constant",
-        cval=0,
-        prefilter=False,
-        grid_mode=False,
-    )
-
-    return res_ct, res_gt
 
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
