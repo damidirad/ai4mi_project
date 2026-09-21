@@ -43,6 +43,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from ENet_2_5d import ENet_2_5d
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -102,6 +103,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
+    slices: int = datasets_params[args.dataset].get('slices', 1)
     root_dir = args.data_root / args.dataset
 
 
@@ -110,6 +112,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
+                             slices=slices,
                              debug=args.debug)
     train_loader = DataLoader(train_set,
                               batch_size=B,
@@ -120,6 +123,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                            root_dir,
                            img_transform=img_transform,
                            gt_transform=partial(gt_transform, K),
+                           slices=slices,
                            debug=args.debug)
     val_loader = DataLoader(val_set,
                             batch_size=B,
@@ -171,6 +175,11 @@ def runTraining(args):
                     log_dice = log_dice_val
 
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
+                if m == 'val':
+                    val_dest = args.dest / f"iter{e:03d}" / m
+                    if val_dest.exists():
+                        rmtree(val_dest)
+
                 j = 0
                 tq_iter = tqdm_(enumerate(loader), total=len(loader), desc=desc)
                 for i, data in tq_iter:

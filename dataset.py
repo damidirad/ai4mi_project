@@ -25,6 +25,7 @@
 from pathlib import Path
 from typing import Callable, Union
 
+import torch
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
@@ -51,28 +52,60 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 
 class SliceDataset(Dataset):
     def __init__(self, subset, root_dir, img_transform=None,
-                 gt_transform=None, augment=False, equalize=False, debug=False):
+                 gt_transform=None, augment=False, equalize=False, debug=False,
+                 slices: int = 1):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
         self.augmentation: bool = augment
         self.equalize: bool = equalize
+        self.slices: int = slices
+
+        assert self.slices > 0 and self.slices % 2 == 1, self.slices
 
         self.test_mode: bool = subset == 'test'
 
         self.files = make_dataset(root_dir, subset)
+        self.slice_paths = [img_path for img_path, _ in self.files]
         if debug:
             self.files = self.files[:10]
+            self.slice_paths = self.slice_paths[:10]
 
-        print(f">> Created {subset} dataset with {len(self)} images...")
+        print(f">> Created {subset} dataset with {len(self)} images and {self.slices} slice(s)...")
 
     def __len__(self):
         return len(self.files)
 
+    @staticmethod
+    def _patient_id(path: Path) -> str:
+        return path.stem.rsplit("_", 1)[0]
+
+    def _neighbor_img_path(self, index: int, offset: int) -> Path:
+        center_path = self.slice_paths[index]
+        neighbor_index = min(max(index + offset, 0), len(self.slice_paths) - 1)
+        neighbor_path = self.slice_paths[neighbor_index]
+
+        if self._patient_id(neighbor_path) != self._patient_id(center_path):
+            return center_path
+
+        return neighbor_path
+
+    def _load_img_stack(self, index: int) -> Tensor:
+        if self.slices == 1:
+            return self.img_transform(Image.open(self.slice_paths[index]))
+
+        radius = self.slices // 2
+        imgs: list[Tensor] = []
+        for offset in range(-radius, radius + 1):
+            img_path = self._neighbor_img_path(index, offset)
+            imgs.append(self.img_transform(Image.open(img_path)))
+
+        return torch.cat(imgs, dim=0)
+
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
 
-        img: Tensor = self.img_transform(Image.open(img_path))
+        img: Tensor = self._load_img_stack(index)
 
         data_dict = {"images": img,
                      "stems": img_path.stem}
