@@ -1,6 +1,7 @@
 torch
 numpy
 nibabel
+pynrrd
 torchvision
 tqdm
 pillow

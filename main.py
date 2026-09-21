@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import argparse
+import random
 import warnings
 from typing import Any
 from pathlib import Path
@@ -101,7 +102,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
-    root_dir = Path("data") / args.dataset
+    root_dir = args.data_root / args.dataset
 
 
 
@@ -112,7 +113,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              debug=args.debug)
     train_loader = DataLoader(train_set,
                               batch_size=B,
-                              num_workers=5,
+                              num_workers=args.workers,
                               shuffle=True)
 
     val_set = SliceDataset('val',
@@ -122,7 +123,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                            debug=args.debug)
     val_loader = DataLoader(val_set,
                             batch_size=B,
-                            num_workers=5,
+                            num_workers=args.workers,
                             shuffle=False)
 
     args.dest.mkdir(parents=True, exist_ok=True)
@@ -246,6 +247,12 @@ def main():
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
+    parser.add_argument('--data_root', type=Path, default=Path('data'),
+                        help="Parent directory containing the selected dataset directory.")
+    parser.add_argument('--workers', default=5, type=int,
+                        help="Number of DataLoader worker processes.")
+    parser.add_argument('--seed', default=0, type=int,
+                        help="Random seed for reproducible model initialization and shuffling.")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
@@ -253,6 +260,10 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     pprint(args)
 
