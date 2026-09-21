@@ -456,20 +456,24 @@ def compute_median_spacing(ids: list[str], src_path: Path,
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
     ids: list[str] = sorted(map_(lambda p: p.name, (src_path / 'train').glob('*')))
     print(f"Founds {len(ids)} in the id list")
-    print(ids[:10])
+    print(ids)
     assert len(ids) > retains
 
     random.shuffle(ids)  # Shuffle before to avoid any problem if the patients are sorted in any way
     validation_slice = slice(fold * retains, (fold + 1) * retains)
     validation_ids: list[str] = ids[validation_slice]
+    print(f"Founds {len(validation_ids)} validation ids")
+    print(f"Validation ids: {validation_ids}")
     assert len(validation_ids) == retains
 
     training_ids: list[str] = [e for e in ids if e not in validation_ids]
     assert (len(training_ids) + len(validation_ids)) == len(ids)
+    print(f"Founds {len(training_ids)} train ids")
+    print(f"Train ids: {training_ids}")
 
     test_ids: list[str] = sorted(map_(lambda p: Path(p.stem).stem, (src_path / 'test').glob('*')))
     print(f"Founds {len(test_ids)} test ids")
-    print(test_ids[:10])
+    print(f"Test ids: {test_ids}")
 
     return training_ids, validation_ids, test_ids
 
@@ -552,7 +556,7 @@ def main(args: argparse.Namespace):
 
     with open(dest_path / "spacing.pkl", 'wb') as f:
         pickle.dump(resolution_dict, f, pickle.HIGHEST_PROTOCOL)
-        print(f"Saved spacing dictionnary to {f}")
+        print(f"Saved spacing dictionnary to {f}\n")
 
 
 def get_args() -> argparse.Namespace:
