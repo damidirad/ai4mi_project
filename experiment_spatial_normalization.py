@@ -34,7 +34,8 @@ def prepare_variant(source_dir: Path, variant_dir: Path, train_patients: list[st
                 source_path=source_dir,
                 shape=shape,
                 test_mode=False,
-                resample=resample,
+                resample=False,
+                spatial_normalize=resample,
                 target_spacing=target_spacing,
                 id_=patient_id,
             )

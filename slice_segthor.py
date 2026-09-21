@@ -68,7 +68,7 @@ def norm_arr(img: np.ndarray) -> np.ndarray:
 
 
 # Intensity Normalization New (HU-clipping)
-def norm_arr(img: np.ndarray) -> np.ndarray:
+def hu_clipping(img: np.ndarray) -> np.ndarray:
     clipped = np.clip(img.astype(np.float32), HU_CLIP_MIN, HU_CLIP_MAX)
     res = 255 * (clipped - HU_CLIP_MIN) / (HU_CLIP_MAX - HU_CLIP_MIN)
 
@@ -97,7 +97,8 @@ def prepare_variant(source_dir: Path, variant_dir: Path, train_patients: list[st
                 source_path=source_dir,
                 shape=shape,
                 test_mode=False,
-                resample=resample,
+                resample=False,
+                spatial_normalize=resample,
                 target_spacing=target_spacing,
                 id_=patient_id,
             )
@@ -146,7 +147,7 @@ def summarize(result_dir: Path) -> dict[str, float | int | str]:
 
 # Voxel Resampling
 def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
-    target_spacing: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    target_spacing: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:
     if ct.ndim != 3 or gt.ndim != 3:
         raise ValueError("CT and labels must both be 3D arrays")
 
@@ -158,19 +159,25 @@ def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float,
     if any(size == 0 for size in ct.shape):
         raise ValueError("CT and labels must have non-empty spatial dimensions")
 
-    dx, dy, _ = validate_spacing(
+    dx, dy, dz = validate_spacing(
         spacing,
         dimensions=3,
         name="Source spacing",
     )
-    target_dx, target_dy = validate_spacing(
+    target_spacing = validate_spacing(
         target_spacing,
-        dimensions=2,
-        name="Target X/Y spacing",
+        dimensions=len(target_spacing),
+        name="Target spacing",
     )
+    if len(target_spacing) not in [2, 3]:
+        raise ValueError("Target spacing must contain either X/Y or X/Y/Z values")
 
-    # Share the X/Y geometry; a factor of 1 leaves Z unchanged.
-    zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
+    if len(target_spacing) == 2:
+        target_dx, target_dy = target_spacing
+        zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
+    else:
+        target_dx, target_dy, target_dz = target_spacing
+        zoom_factors = (dx / target_dx, dy / target_dy, dz / target_dz)
 
     # Float32 preserves fractional CT values during linear interpolation.
     # Both calls use the same boundary and coordinate settings:
@@ -316,9 +323,23 @@ def build_gt_from_segnrrd(seg_path: Path, ct_shape: tuple[int, int, int]) -> np.
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
+def normalize_ct(ct: np.ndarray, mode: str) -> np.ndarray:
+    match mode:
+        case "old":
+            return norm_arr(ct)
+        case "new":
+            return hu_clipping(ct)
+        case "none":
+            return ct.astype(np.uint8)
+        case _:
+            raise ValueError(f"Unknown intensity normalization mode: {mode}")
+
+
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, resample: bool = False,
-                  target_spacing: tuple[float, float] | None = None) -> tuple[float, float, float]:
+                  target_spacing: tuple[float, ...] | None = None,
+                  intensity_normalization: str = "old",
+                  spatial_normalize: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -328,7 +349,10 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     x, y, z = ct.shape
     dx, dy, dz = nib_obj.header.get_zooms()
 
-    if resample:
+    should_resample = resample or spatial_normalize
+    spacing_dimensions = 3 if spatial_normalize else 2
+
+    if should_resample:
         validate_spacing(
             (dx, dy, dz),
             dimensions=3,
@@ -336,12 +360,12 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         )
 
         if target_spacing is None:
-            raise ValueError("Target X/Y spacing is required when resampling")
+            raise ValueError("Target spacing is required when resampling")
 
-        target_dx, target_dy = validate_spacing(
+        target_spacing = validate_spacing(
             target_spacing,
-            dimensions=2,
-            name="Target X/Y spacing",
+            dimensions=spacing_dimensions,
+            name="Target spacing",
         )
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
@@ -356,15 +380,15 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    if resample:
-        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), (target_dx, target_dy))
+    if should_resample:
+        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    norm_ct: np.ndarray = normalize_ct(ct, intensity_normalization)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
 
-    for idz in range(z):
+    for idz in range(to_slice_ct.shape[2]):
         img_slice = resize_(to_slice_ct[:, :, idz], shape).astype(np.uint8)
         gt_slice = resize_(to_slice_gt[:, :, idz], shape, order=0).astype(np.uint8)
         assert img_slice.shape == gt_slice.shape
@@ -403,9 +427,12 @@ def validate_spacing(spacing, *, dimensions: int, name: str) -> tuple[float, ...
     return tuple(float(value) for value in values)
 
 
-def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float]:
+def compute_median_spacing(ids: list[str], src_path: Path,
+                           dimensions: int = 2) -> tuple[float, ...]:
     if not ids:
         raise ValueError("Cannot compute target spacing from an empty training set")
+    if dimensions not in [2, 3]:
+        raise ValueError("Median spacing can only be computed for 2 or 3 dimensions")
 
     spacings = []
     for id_ in ids:
@@ -415,15 +442,15 @@ def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float
             dimensions=3,
             name=f"Source spacing for {id_}",
         )
-        spacings.append(spacing[:2])
+        spacings.append(spacing[:dimensions])
 
-    median_xy = np.median(np.asarray(spacings), axis=0)
-    target_dx, target_dy = validate_spacing(
-        median_xy,
-        dimensions=2,
+    median_spacing = np.median(np.asarray(spacings), axis=0)
+    target_spacing = validate_spacing(
+        median_spacing,
+        dimensions=dimensions,
         name="Training-set target spacing",
     )
-    return target_dx, target_dy
+    return target_spacing
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
@@ -460,24 +487,38 @@ def main(args: argparse.Namespace):
     test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
-    target_spacing: tuple[float, float] | None = None
+    intensity_normalization = getattr(args, "intensity_normalization", "old")
+    if getattr(args, "hu_clip", False):
+        intensity_normalization = "new"
 
-    if args.resample:
+    voxel_resample = getattr(args, "voxel_resample", getattr(args, "resample", False))
+    spatial_normalize = getattr(args, "spatial_normalize", False)
+
+    if spatial_normalize and voxel_resample:
+        raise ValueError("Use either --spatial_normalize or --voxel_resample/--resample, not both")
+
+    target_spacing: tuple[float, ...] | None = None
+    should_resample = voxel_resample or spatial_normalize
+    spacing_dimensions = 3 if spatial_normalize else 2
+
+    print(f"Intensity normalization: {intensity_normalization}")
+
+    if should_resample:
         if args.target_spacing is not None:
-            target_dx, target_dy = validate_spacing(
+            target_spacing = validate_spacing(
                 args.target_spacing,
-                dimensions=2,
-                name="Manual target X/Y spacing",
+                dimensions=spacing_dimensions,
+                name="Manual target spacing",
             )
-            target_spacing = (target_dx, target_dy)
             spacing_source = "manual override"
         else:
-            target_spacing = compute_median_spacing(training_ids, src_path)
+            target_spacing = compute_median_spacing(training_ids, src_path, spacing_dimensions)
             spacing_source = "training-set median"
 
+        mode_name = "spatial normalization X/Y/Z" if spatial_normalize else "voxel resampling X/Y"
         print(
-            f"Resampling X/Y to {target_spacing} mm "
-            f"({spacing_source}); Z spacing unchanged"
+            f"{mode_name} to {target_spacing} mm "
+            f"({spacing_source})"
         )
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
@@ -492,8 +533,10 @@ def main(args: argparse.Namespace):
                                  source_path=src_path,
                                  shape=tuple(args.shape),
                                  test_mode=mode == 'test',
-                                 resample=args.resample,
-                                 target_spacing=target_spacing)
+                                 resample=voxel_resample,
+                                 spatial_normalize=spatial_normalize,
+                                 target_spacing=target_spacing,
+                                 intensity_normalization=intensity_normalization)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -518,12 +561,21 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
-    parser.add_argument('--resample', action='store_true', help="Resample CT/GT in X/Y before slicing; preserve Z.")
-    parser.add_argument('--target_spacing', type=float, nargs=2, metavar=('DX', 'DY'), default=None,
+    parser.add_argument('--intensity_normalization', choices=['old', 'new', 'none'], default='old',
+                        help="CT intensity preprocessing: old min/max normalization, new HU clipping, or none.")
+    parser.add_argument('--hu_clip', action='store_true',
+                        help="Shortcut for --intensity_normalization new.")
+    parser.add_argument('--resample', '--voxel_resample', dest='voxel_resample',
+                        action='store_true',
+                        help="Resample CT/GT in X/Y before slicing; preserve Z.")
+    parser.add_argument('--spatial_normalize', action='store_true',
+                        help="Resample CT/GT in X/Y/Z before slicing.")
+    parser.add_argument('--target_spacing', type=float, nargs="+", metavar='D', default=None,
         help=(
-            "Manual target X/Y spacing in mm, used with --resample. "
+            "Manual target spacing in mm. Use DX DY with --voxel_resample/--resample "
+            "or DX DY DZ with --spatial_normalize. "
             "Values must be finite and positive. "
-            "Defaults to the median X/Y spacing of the training split."
+            "Defaults to the median training-set spacing for the selected dimensions."
         ),
     )
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
@@ -532,6 +584,16 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
+    if args.spatial_normalize and args.voxel_resample:
+        parser.error("Use either --spatial_normalize or --voxel_resample/--resample, not both")
+    if args.target_spacing is not None:
+        if args.voxel_resample and len(args.target_spacing) != 2:
+            parser.error("--voxel_resample/--resample requires --target_spacing DX DY")
+        if args.spatial_normalize and len(args.target_spacing) != 3:
+            parser.error("--spatial_normalize requires --target_spacing DX DY DZ")
+        if not args.voxel_resample and not args.spatial_normalize:
+            parser.error("--target_spacing requires --voxel_resample/--resample or --spatial_normalize")
+    args.resample = args.voxel_resample
     random.seed(args.seed)
 
     print(args)
