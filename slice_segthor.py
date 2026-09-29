@@ -53,9 +53,8 @@ NUM_CLASSES: int = len(CLASS_ORDER)
 LABEL_STEP: int = 255 // (NUM_CLASSES - 1)  # 63, matches the original encoding
 
 
-# Clip HU values to a soft-tissue/mediastinum window before rescaling to uint8
-HU_CLIP_MIN: float = -400.0
-HU_CLIP_MAX: float = 400.0
+# Clip HU values to percentiles of the training-set foreground (organ) voxels
+HU_PERCENTILES: tuple[float, float] = (0.5, 99.5)
 
 
 # Intensity Normalization Old
@@ -68,9 +67,9 @@ def norm_arr(img: np.ndarray) -> np.ndarray:
 
 
 # Intensity Normalization New (HU-clipping)
-def hu_clipping(img: np.ndarray) -> np.ndarray:
-    clipped = np.clip(img.astype(np.float32), HU_CLIP_MIN, HU_CLIP_MAX)
-    res = 255 * (clipped - HU_CLIP_MIN) / (HU_CLIP_MAX - HU_CLIP_MIN)
+def hu_clipping(img: np.ndarray, hu_min: float, hu_max: float) -> np.ndarray:
+    clipped = np.clip(img.astype(np.float32), hu_min, hu_max)
+    res = 255 * (clipped - hu_min) / (hu_max - hu_min)
 
     return res.astype(np.uint8)
 
@@ -323,12 +322,15 @@ def build_gt_from_segnrrd(seg_path: Path, ct_shape: tuple[int, int, int]) -> np.
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
-def normalize_ct(ct: np.ndarray, mode: str) -> np.ndarray:
+def normalize_ct(ct: np.ndarray, mode: str,
+                 hu_window: tuple[float, float] | None = None) -> np.ndarray:
     match mode:
         case "old":
             return norm_arr(ct)
         case "new":
-            return hu_clipping(ct)
+            if hu_window is None:
+                raise ValueError("HU window is required for HU clipping")
+            return hu_clipping(ct, *hu_window)
         case "none":
             return ct.astype(np.uint8)
         case _:
@@ -339,6 +341,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
                   test_mode: bool = False, resample: bool = False,
                   target_spacing: tuple[float, ...] | None = None,
                   intensity_normalization: str = "old",
+                  hu_window: tuple[float, float] | None = None,
                   spatial_normalize: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
@@ -383,7 +386,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     if should_resample:
         ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
 
-    norm_ct: np.ndarray = normalize_ct(ct, intensity_normalization)
+    norm_ct: np.ndarray = normalize_ct(ct, intensity_normalization, hu_window)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -453,6 +456,31 @@ def compute_median_spacing(ids: list[str], src_path: Path,
     return target_spacing
 
 
+def compute_hu_window(ids: list[str], src_path: Path,
+                      percentiles: tuple[float, float] = HU_PERCENTILES) -> tuple[float, float]:
+    if not ids:
+        raise ValueError("Cannot compute HU window from an empty training set")
+
+    foreground_values = []
+    for id_ in ids:
+        id_path = src_path / "train" / id_
+        ct = np.asarray(nib.load(str(id_path / f"{id_}.nii.gz")).dataobj)
+        seg_candidates = list(id_path.glob("*.seg.nrrd"))
+        assert len(seg_candidates) == 1, f"Expected exactly one .seg.nrrd in {id_path}, found {seg_candidates}"
+        gt = build_gt_from_segnrrd(seg_candidates[0], ct.shape)
+        foreground_values.append(ct[gt > 0].astype(np.float32))
+
+    values = np.concatenate(foreground_values)
+    if values.size == 0:
+        raise ValueError("No foreground voxels found in the training set")
+
+    hu_min, hu_max = np.percentile(values, percentiles)
+    if not hu_max > hu_min:
+        raise ValueError(f"Degenerate HU window: [{hu_min}, {hu_max}]")
+
+    return float(hu_min), float(hu_max)
+
+
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
     ids: list[str] = sorted(map_(lambda p: p.name, (src_path / 'train').glob('*')))
     print(f"Founds {len(ids)} in the id list")
@@ -507,6 +535,14 @@ def main(args: argparse.Namespace):
 
     print(f"Intensity normalization: {intensity_normalization}")
 
+    hu_window: tuple[float, float] | None = None
+    if intensity_normalization == "new":
+        hu_window = compute_hu_window(training_ids, src_path)
+        print(
+            f"HU clipping window: [{hu_window[0]:.1f}, {hu_window[1]:.1f}] "
+            f"(training-set foreground percentiles {HU_PERCENTILES})"
+        )
+
     if should_resample:
         if args.target_spacing is not None:
             target_spacing = validate_spacing(
@@ -540,7 +576,8 @@ def main(args: argparse.Namespace):
                                  resample=voxel_resample,
                                  spatial_normalize=spatial_normalize,
                                  target_spacing=target_spacing,
-                                 intensity_normalization=intensity_normalization)
+                                 intensity_normalization=intensity_normalization,
+                                 hu_window=hu_window)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
