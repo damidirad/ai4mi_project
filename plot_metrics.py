@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 
 CLASS_ORDER = {
     "Background": 0,
-    "Heart": 1,
-    "Esophagus": 2,
+    "Esophagus": 1,
+    "Heart": 2,
     "Trachea": 3,
     "Aorta": 4,
 }
