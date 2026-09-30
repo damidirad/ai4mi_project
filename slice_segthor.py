@@ -123,6 +123,17 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     if target_spacing is not None:
         ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
 
+        dx = target_spacing[0]
+        dy = target_spacing[1]
+
+        if len(target_spacing) == 3:
+            dz = target_spacing[2]
+
+    orig_x, orig_y = ct.shape[:2]
+
+    dx = dx * orig_x / shape[0]
+    dy = dy * orig_y / shape[1]
+
     norm_ct: np.ndarray = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
 
     for idz in range(norm_ct.shape[2]):
