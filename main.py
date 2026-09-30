@@ -148,6 +148,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
+    if args.debug:
+        print(f">>> DEBUG train dataset size: {len(train_loader.dataset)}")
+        print(f">>> DEBUG val dataset size: {len(val_loader.dataset)}")
+        print(f">>> DEBUG train batches: {len(train_loader)}")
+        print(f">>> DEBUG val batches: {len(val_loader)}")
+
     with open(args.data_root / args.dataset / "spacing.pkl", "rb") as f:
         spacing_dict = pickle.load(f)
 
@@ -163,6 +169,8 @@ def runTraining(args):
     log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
+    log_h95_val: Tensor = torch.zeros((args.epochs,))
+    log_assd_val: Tensor = torch.zeros((args.epochs,))
 
     best_dice: float = 0
 
@@ -204,9 +212,6 @@ def runTraining(args):
                 tq_iter = tqdm_(enumerate(loader), total=len(loader), desc=desc)
                 for i, data in tq_iter:
                     img = data['images'].to(device)
-                    if args.debug:
-                        print(f">> {m} batch {i}: {img.shape=}, {data['stems']=}, {data['gts'].shape=}")
-
                     gt = data['gts'].to(device)
 
                     if opt:  # So only for training
@@ -221,6 +226,18 @@ def runTraining(args):
 
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
+
+                    if args.debug and m == 'val' and i == 0:
+                        print(
+                            f">>> DEBUG epoch {e}: "
+                            f"pred pixel counts = "
+                            f"{pred_seg.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
+                        )
+                        print(
+                            f">>> DEBUG epoch {e}: "
+                            f"gt pixel counts = "
+                            f"{gt.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
+                        )
                     if m == 'val':
                         for b, stem in enumerate(data['stems']):
                             patient_id, slice_id = str(stem).rsplit("_", 1)
@@ -282,10 +299,65 @@ def runTraining(args):
                 # [D, K, H, W] -> [1, K, D, H, W]
                 pred_volume = pred_volume.permute(1, 0, 2, 3).unsqueeze(0)
                 gt_volume = gt_volume.permute(1, 0, 2, 3).unsqueeze(0)
+                   
+                # DEBUG: recompute 2D Dice for this patient's slices
+                if args.debug and patient_id == sorted(patient_preds)[0]:
+                    patient_slice_dice = []
+
+                    for sid in slice_ids:
+                        d = dice_coef(
+                            patient_preds[patient_id][sid].unsqueeze(0),
+                            patient_gts[patient_id][sid].unsqueeze(0)
+                        )
+                        patient_slice_dice.append(d.squeeze(0))
+
+                    patient_slice_dice = torch.stack(patient_slice_dice)
+
+                    print(
+                        f">>> DEBUG {patient_id} 2D Dice mean: "
+                        f"{patient_slice_dice.mean(dim=0).tolist()}"
+                    )
+                    print(
+                        f">>> DEBUG {patient_id} 2D Dice foreground: "
+                        f"{patient_slice_dice[:, 1:].mean(dim=0).tolist()}"
+                    )
+
+                if args.debug and patient_id == sorted(patient_preds)[0]:
+                    stored_pred_counts = torch.zeros(5, dtype=torch.long)
+
+                    for sid in slice_ids:
+                        stored_pred = patient_preds[patient_id][sid]
+                        stored_pred_counts += stored_pred.sum(dim=(1, 2)).long()
+
+                    print(
+                        f">>> DEBUG {patient_id} stored pred voxels: "
+                        f"{stored_pred_counts.tolist()}"
+                    )
+
+                if args.debug and patient_id == sorted(patient_preds)[0]:
+                    print(f">>> DEBUG reconstructed {patient_id}")
+                    print(f"    slices: {slice_ids[0]} -> {slice_ids[-1]} ({len(slice_ids)} slices)")
+                    print(f"    pred shape: {pred_volume.shape}")
+                    print(f"    gt shape:   {gt_volume.shape}")
+                    print(f"    pred voxels: {pred_volume.sum(dim=(0, 2, 3, 4)).tolist()}")
+                    print(f"    gt voxels:   {gt_volume.sum(dim=(0, 2, 3, 4)).tolist()}")
 
                 patient_dice = dice_3d(gt_volume, pred_volume)
                 patient_hd95 = hausdorff95(gt_volume, pred_volume, spacing=spacing)
                 patient_assd = assd(gt_volume, pred_volume, spacing=spacing)
+                if args.debug and patient_id == sorted(patient_preds)[0]:
+                    print(
+                        f">>> DEBUG metrics {patient_id}: "
+                        f"Dice={patient_dice.squeeze(0).tolist()}"
+                    )
+                    print(
+                        f">>> DEBUG metrics {patient_id}: "
+                        f"HD95={patient_hd95.squeeze(0).tolist()}"
+                    )
+                    print(
+                        f">>> DEBUG metrics {patient_id}: "
+                        f"ASSD={patient_assd.squeeze(0).tolist()}"
+                    )
 
                 dice_3d_scores.append(patient_dice.squeeze(0))
                 hd95_scores.append(patient_hd95.squeeze(0))
@@ -312,11 +384,41 @@ def runTraining(args):
             # Mean foreground 3D Dice, ignoring background
             current_dice = dice_3d_scores[:, 1:].mean().item()
 
+            if args.debug:
+                print(
+                    f">>> DEBUG epoch {e}: "
+                    f"HD95 finite={torch.isfinite(hd95_scores[:, 1:]).sum().item()} / "
+                    f"{hd95_scores[:, 1:].numel()}"
+                )
+                print(
+                    f">>> DEBUG epoch {e}: "
+                    f"ASSD finite={torch.isfinite(assd_scores[:, 1:]).sum().item()} / "
+                    f"{assd_scores[:, 1:].numel()}"
+                )
+
             finite_hd95 = hd95_scores[:, 1:][torch.isfinite(hd95_scores[:, 1:])]
             finite_assd = assd_scores[:, 1:][torch.isfinite(assd_scores[:, 1:])]
 
             mean_hd95 = finite_hd95.mean().item()
             mean_assd = finite_assd.mean().item()
+
+            log_h95_val[e] = mean_hd95
+            log_assd_val[e] = mean_assd
+
+            if args.debug:
+                print(f"\n>>> DEBUG SUMMARY epoch {e}")
+                print(f"    3D Dice shape:  {dice_3d_scores.shape}")
+                print(f"    3D Dice values:\n{dice_3d_scores}")
+                print(
+                    f"    HD95 finite: "
+                    f"{torch.isfinite(hd95_scores).sum().item()} / "
+                    f"{hd95_scores.numel()}"
+                )
+                print(
+                    f"    ASSD finite: "
+                    f"{torch.isfinite(assd_scores).sum().item()} / "
+                    f"{assd_scores.numel()}"
+                )
 
             print(
                 f">>> 3D metrics at epoch {e}: "
@@ -330,6 +432,8 @@ def runTraining(args):
         np.save(args.dest / "dice_tra.npy", log_dice_tra)
         np.save(args.dest / "loss_val.npy", log_loss_val)
         np.save(args.dest / "dice_val.npy", log_dice_val)
+        np.save(args.dest / "h95_val.npy", log_h95_val)
+        np.save(args.dest / "assd_val.npy", log_assd_val)
 
         if current_dice > best_dice:
             message = f">>> Improved 3D dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
