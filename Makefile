@@ -29,7 +29,7 @@ data/SEGTHOR: data/segthor_train_full
 	find $< -name .DS_Store -delete
 	rm -rf $@_tmp $@
 	python $(CFLAGS) slice_segthor.py --source_dir $< --dest_dir $@_tmp \
-		--shape 256 256 --retain  --hu_clip
+		--shape 256 256 --retain 5
 	mv $@_tmp $@
 
 data/SEGTHOR_hu: data/segthor_train_full
