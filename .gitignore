@@ -5,6 +5,7 @@ results/
 volumes/
 ai4mi/
 __pycache__/
+.venv/
 
 projects
 .DS_Store
