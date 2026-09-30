@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.10
-# ENet with 2.5d
+# ENet with 2.5d: the initial block and bottleneck1 run in 3D, the rest in 2D on the center slice
 
 import torch
 import torch.nn as nn
@@ -8,9 +8,9 @@ from torch import Tensor
 
 
 def random_weights_init(m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv3d):
+        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Conv3d)):
                 nn.init.xavier_normal_(m.weight.data)
-        elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm3d):
+        elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm3d)):
                 m.weight.data.normal_(1.0, 0.02)
                 m.bias.data.fill_(0)
 
@@ -21,13 +21,19 @@ def conv_block(in_dim, out_dim, **kwconv):
                              nn.PReLU())
 
 
+def conv_block3d(in_dim, out_dim, **kwconv):
+        return nn.Sequential(nn.Conv3d(in_dim, out_dim, **kwconv),
+                             nn.BatchNorm3d(out_dim),
+                             nn.PReLU())
+
+
 def conv_block_asym(in_dim, out_dim, *, kernel_size: int):
         return nn.Sequential(nn.Conv2d(in_dim, out_dim,
                                        kernel_size=(kernel_size, 1),
-                                       padding=(2, 0)),
+                                       padding=(kernel_size // 2, 0)),
                              nn.Conv2d(out_dim, out_dim,
                                        kernel_size=(1, kernel_size),
-                                       padding=(0, 2)),
+                                       padding=(0, kernel_size // 2)),
                              nn.BatchNorm2d(out_dim),
                              nn.PReLU())
 
@@ -37,20 +43,13 @@ class BottleNeck(nn.Module):
                      *, dropoutRate=0.01, dilation=1,
                      asym: bool = False, dilate_last: bool = False):
                 super().__init__()
-                self.in_dim = in_dim
-                self.out_dim = out_dim
                 mid_dim: int = in_dim // projectionFactor
 
-                # Main branch
-
-                # Secondary branch
                 self.block0 = conv_block(in_dim, mid_dim, kernel_size=1)
-
                 if not asym:
                         self.block1 = conv_block(mid_dim, mid_dim, kernel_size=3, padding=dilation, dilation=dilation)
                 else:
                         self.block1 = conv_block_asym(mid_dim, mid_dim, kernel_size=5)
-
                 self.block2 = conv_block(mid_dim, out_dim, kernel_size=1)
 
                 self.do = nn.Dropout(p=dropoutRate)
@@ -64,16 +63,25 @@ class BottleNeck(nn.Module):
                         self.conv_out = nn.Identity()
 
         def forward(self, in_) -> Tensor:
-                # Main branch
-                # Secondary branch
-                b0 = self.block0(in_)
-                b1 = self.block1(b0)
-                b2 = self.block2(b1)
-                do = self.do(b2)
+                do = self.do(self.block2(self.block1(self.block0(in_))))
+                return self.PReLU_out(self.conv_out(in_) + do)
 
-                output = self.PReLU_out(self.conv_out(in_) + do)
 
-                return output
+class BottleNeck3d(nn.Module):
+        def __init__(self, dim, projectionFactor, *, dropoutRate=0.01):
+                super().__init__()
+                mid_dim: int = dim // projectionFactor
+
+                self.block0 = conv_block3d(dim, mid_dim, kernel_size=1)
+                self.block1 = conv_block3d(mid_dim, mid_dim, kernel_size=3, padding=1)
+                self.block2 = conv_block3d(mid_dim, dim, kernel_size=1)
+
+                self.do = nn.Dropout(p=dropoutRate)
+                self.PReLU_out = nn.PReLU()
+
+        def forward(self, in_) -> Tensor:
+                do = self.do(self.block2(self.block1(self.block0(in_))))
+                return self.PReLU_out(in_ + do)
 
 
 class BottleNeckDownSampling(nn.Module):
@@ -81,37 +89,48 @@ class BottleNeckDownSampling(nn.Module):
                 super().__init__()
                 mid_dim: int = in_dim // projectionFactor
 
-                # Main branch
                 self.maxpool0 = nn.MaxPool2d(2, return_indices=True)
 
-                # Secondary branch
                 self.block0 = conv_block(in_dim, mid_dim, kernel_size=2, padding=0, stride=2)
                 self.block1 = conv_block(mid_dim, mid_dim, kernel_size=3, padding=1)
                 self.block2 = conv_block(mid_dim, out_dim, kernel_size=1)
 
-                # Regularizer
                 self.do = nn.Dropout(p=0.01)
                 self.PReLU = nn.PReLU()
 
-                # Out
-
         def forward(self, in_) -> tuple[Tensor, Tensor]:
-                # Main branch
                 maxpool_output, indices = self.maxpool0(in_)
 
-                # Secondary branch
-                b0 = self.block0(in_)
-                b1 = self.block1(b0)
-                b2 = self.block2(b1)
-                do = self.do(b2)
+                output = self.do(self.block2(self.block1(self.block0(in_))))
+                c = maxpool_output.shape[1]
+                output[:, :c] += maxpool_output
 
-                _, c, _, _ = maxpool_output.shape
-                output = do
-                output[:, :c, :, :] += maxpool_output
+                return self.PReLU(output), indices
 
-                final_output = self.PReLU(output)
 
-                return final_output, indices
+class BottleNeckDownSampling3d(nn.Module):
+        # downsample only h,w and preserve depth
+        def __init__(self, in_dim, out_dim, projectionFactor):
+                super().__init__()
+                mid_dim: int = in_dim // projectionFactor
+
+                self.maxpool0 = nn.MaxPool3d((1, 2, 2), return_indices=True)
+
+                self.block0 = conv_block3d(in_dim, mid_dim, kernel_size=(1, 2, 2), stride=(1, 2, 2))
+                self.block1 = conv_block3d(mid_dim, mid_dim, kernel_size=3, padding=1)
+                self.block2 = conv_block3d(mid_dim, out_dim, kernel_size=1)
+
+                self.do = nn.Dropout(p=0.01)
+                self.PReLU = nn.PReLU()
+
+        def forward(self, in_) -> tuple[Tensor, Tensor]:
+                maxpool_output, indices = self.maxpool0(in_)
+
+                output = self.do(self.block2(self.block1(self.block0(in_))))
+                c = maxpool_output.shape[1]
+                output[:, :c] += maxpool_output
+
+                return self.PReLU(output), indices
 
 
 class BottleNeckUpSampling(nn.Module):
@@ -119,89 +138,71 @@ class BottleNeckUpSampling(nn.Module):
                 super().__init__()
                 mid_dim: int = in_dim // projectionFactor
 
-                # Main branch
                 self.unpool = nn.MaxUnpool2d(2)
 
-                # Secondary branch
                 self.block0 = conv_block(in_dim, mid_dim, kernel_size=3, padding=1)
                 self.block1 = conv_block(mid_dim, mid_dim, kernel_size=3, padding=1)
                 self.block2 = conv_block(mid_dim, out_dim, kernel_size=1)
 
-                # Regularizer
                 self.do = nn.Dropout(p=0.01)
                 self.PReLU = nn.PReLU()
 
-                # Out
-
         def forward(self, args) -> Tensor:
-                # nn.Sequential cannot handle multiple parameters:
                 in_, indices, skip = args
 
-                # Main branch
                 up = self.unpool(in_, indices)
+                do = self.do(self.block2(self.block1(self.block0(torch.cat((up, skip), dim=1)))))
 
-                # Secondary branch
-                b0 = self.block0(torch.cat((up, skip), dim=1))
-                b1 = self.block1(b0)
-                b2 = self.block2(b1)
-                do = self.do(b2)
-
-                output = self.PReLU(up + do)
-
-                return output
+                return self.PReLU(up + do)
 
 
 class ENet_2_5d(nn.Module):
         def __init__(self, in_dim: int, out_dim: int, **kwargs):
                 super().__init__()
-                F: int = kwargs["factor"] if "factor" in kwargs else 4  # Projecting factor
-                K: int = kwargs["kernels"] if "kernels" in kwargs else 16  # n_kernels
+                factor: int = kwargs.get("factor", 4)  # projection factor
+                K: int = kwargs.get("kernels", 16)  # n_kernels
                 self.in_dim = in_dim
 
-                # from models.enet import (BottleNeck,
-                #                          BottleNeckDownSampling,
-                #                          BottleNeckUpSampling,
-                #                          conv_block)
+                # 3d operations on the input volume
+                self.conv0 = nn.Conv3d(in_dim, K - in_dim, kernel_size=3, stride=(1, 2, 2), padding=1)
+                self.maxpool0 = nn.MaxPool3d((1, 2, 2))
 
-                # Initial operations
-                self.conv0 = nn.Conv3d(in_dim, K - 1, kernel_size=(3, 3, 3),
-                                       stride=(1, 2, 2), padding=(1, 1, 1))
-                self.maxpool0 = nn.MaxPool2d(2, return_indices=False, ceil_mode=False)
+                # downsampling half
+                self.bottleneck1_0 = BottleNeckDownSampling3d(K, K * 4, factor)
+                self.bottleneck1_1 = nn.Sequential(BottleNeck3d(K * 4, factor),
+                                                   BottleNeck3d(K * 4, factor),
+                                                   BottleNeck3d(K * 4, factor),
+                                                   BottleNeck3d(K * 4, factor))
 
-                # Downsampling half
-                self.bottleneck1_0 = BottleNeckDownSampling(K, K * 4, F)
-                self.bottleneck1_1 = nn.Sequential(BottleNeck(K * 4, K * 4, F),
-                                                   BottleNeck(K * 4, K * 4, F),
-                                                   BottleNeck(K * 4, K * 4, F),
-                                                   BottleNeck(K * 4, K * 4, F))
-                self.bottleneck2_0 = BottleNeckDownSampling(K * 4, K * 8, F)
-                self.bottleneck2_1 = nn.Sequential(BottleNeck(K * 8, K * 8, F, dropoutRate=0.1),
-                                                   BottleNeck(K * 8, K * 8, F, dilation=2),
-                                                   BottleNeck(K * 8, K * 8, F, dropoutRate=0.1, asym=True),
-                                                   BottleNeck(K * 8, K * 8, F, dilation=4),
-                                                   BottleNeck(K * 8, K * 8, F, dropoutRate=0.1),
-                                                   BottleNeck(K * 8, K * 8, F, dilation=8),
-                                                   BottleNeck(K * 8, K * 8, F, dropoutRate=0.1, asym=True),
-                                                   BottleNeck(K * 8, K * 8, F, dilation=16))
+                # 2d on the center slice
+                self.bottleneck2_0 = BottleNeckDownSampling(K * 4, K * 8, factor)
+                self.bottleneck2_1 = nn.Sequential(BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1),
+                                                   BottleNeck(K * 8, K * 8, factor, dilation=2),
+                                                   BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1, asym=True),
+                                                   BottleNeck(K * 8, K * 8, factor, dilation=4),
+                                                   BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1),
+                                                   BottleNeck(K * 8, K * 8, factor, dilation=8),
+                                                   BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1, asym=True),
+                                                   BottleNeck(K * 8, K * 8, factor, dilation=16))
 
-                # Middle operations
-                self.bottleneck3 = nn.Sequential(BottleNeck(K * 8, K * 8, F, dropoutRate=0.1),
-                                                 BottleNeck(K * 8, K * 8, F, dilation=2),
-                                                 BottleNeck(K * 8, K * 8, F, dropoutRate=0.1, asym=True),
-                                                 BottleNeck(K * 8, K * 8, F, dilation=4),
-                                                 BottleNeck(K * 8, K * 8, F, dropoutRate=0.1),
-                                                 BottleNeck(K * 8, K * 8, F, dilation=8),
-                                                 BottleNeck(K * 8, K * 8, F, dropoutRate=0.1, asym=True),
-                                                 BottleNeck(K * 8, K * 4, F, dilation=16, dilate_last=True))
+                # 2d operations, middle of the network
+                self.bottleneck3 = nn.Sequential(BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1),
+                                                 BottleNeck(K * 8, K * 8, factor, dilation=2),
+                                                 BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1, asym=True),
+                                                 BottleNeck(K * 8, K * 8, factor, dilation=4),
+                                                 BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1),
+                                                 BottleNeck(K * 8, K * 8, factor, dilation=8),
+                                                 BottleNeck(K * 8, K * 8, factor, dropoutRate=0.1, asym=True),
+                                                 BottleNeck(K * 8, K * 4, factor, dilation=16, dilate_last=True))
 
-                # Upsampling half
-                self.bottleneck4 = nn.Sequential(BottleNeckUpSampling(K * 8, K * 4, F),
-                                                 BottleNeck(K * 4, K * 4, F, dropoutRate=0.1),
-                                                 BottleNeck(K * 4, K, F, dropoutRate=0.1))
-                self.bottleneck5 = nn.Sequential(BottleNeckUpSampling(K * 2, K, F),
-                                                 BottleNeck(K, K, F, dropoutRate=0.1))
+                # upsampling half
+                self.bottleneck4 = nn.Sequential(BottleNeckUpSampling(K * 8, K * 4, factor),
+                                                 BottleNeck(K * 4, K * 4, factor, dropoutRate=0.1),
+                                                 BottleNeck(K * 4, K, factor, dropoutRate=0.1))
+                self.bottleneck5 = nn.Sequential(BottleNeckUpSampling(K * 2, K, factor),
+                                                 BottleNeck(K, K, factor, dropoutRate=0.1))
 
-                # Final upsampling and covolutions
+                # fn upsampling and convolutions
                 self.final = nn.Sequential(conv_block(K, K, kernel_size=3, padding=1, bias=False, stride=1),
                                            conv_block(K, K, kernel_size=3, padding=1, bias=False, stride=1),
                                            nn.Conv2d(K, out_dim, kernel_size=1))
@@ -209,49 +210,41 @@ class ENet_2_5d(nn.Module):
                 print(f"> Initialized {self.__class__.__name__} ({in_dim=}->{out_dim=}) with {kwargs}")
 
         def _as_volume(self, input: Tensor) -> Tensor:
+                # (B, slices * in_dim, H, W) -> (B, in_dim, slices, H, W)
                 if input.dim() == 5:
-                        assert input.shape[1] == self.in_dim, (f"Expected input with {self.in_dim} channels, got {input.shape[1]}")
                         return input
 
-                if input.dim() != 4:
-                        raise ValueError(f"Expected a 4D or 5D tensor, got shape {tuple(input.shape)}")
-
                 b, c, h, w = input.shape
-                if c == self.in_dim:
-                        return input.unsqueeze(2)
-
-                if c % self.in_dim != 0:
-                        raise ValueError(f"Cannot split {c} input channels into {self.in_dim} channel(s) per slice")
-
-                slices = c // self.in_dim
-                return input.view(b, self.in_dim, slices, h, w)
-
-        @staticmethod
-        def _center_slice(volume: Tensor) -> Tensor:
-                return volume[:, :, volume.shape[2] // 2, :, :]
+                assert c % self.in_dim == 0, f"Cannot split {c} channels into {self.in_dim} per slice"
+                return input.reshape(b, c // self.in_dim, self.in_dim, h, w).transpose(1, 2)
 
         def forward(self, input):
-                # Initial operations
                 volume = self._as_volume(input)
-                conv_0 = self._center_slice(self.conv0(volume))
-                maxpool_0 = self.maxpool0(self._center_slice(volume))
-                outputInitial = torch.cat((conv_0, maxpool_0), dim=1)
+                d = volume.shape[2] // 2  # Center slice
 
-                # Downsampling half
-                bn1_0, indices_1 = self.bottleneck1_0(outputInitial)
-                bn1_out = self.bottleneck1_1(bn1_0)
+                # 3d operations on the input volume
+                initial = torch.cat((self.conv0(volume), self.maxpool0(volume)), dim=1)
+
+                # downsampling half, first stage in 3d
+                bn1_0, indices_3d = self.bottleneck1_0(initial)
+                bn1_3d = self.bottleneck1_1(bn1_0)
+
+                # collapse to the center slice, shift back to 2d indices for MaxUnpool2d.
+                h, w = initial.shape[-2:]
+                outputInitial = initial[:, :, d]
+                bn1_out = bn1_3d[:, :, d]
+                indices_1 = indices_3d[:, :, d] - d * h * w
+
+                # rest of network in 2d on the center slice
                 bn2_0, indices_2 = self.bottleneck2_0(bn1_out)
                 bn2_out = self.bottleneck2_1(bn2_0)
 
-                # Middle operations
                 bn3_out = self.bottleneck3(bn2_out)
 
-                # Upsampling half
                 bn4_out = self.bottleneck4((bn3_out, indices_2, bn1_out))
                 bn5_out = self.bottleneck5((bn4_out, indices_1, outputInitial))
 
-                # Final upsampling and covolutions
-                interpolated = F.interpolate(bn5_out, mode='nearest', scale_factor=2)
+                interpolated = F.interpolate(bn5_out, mode='bilinear', scale_factor=2)
                 return self.final(interpolated)
 
         def init_weights(self, *args, **kwargs):

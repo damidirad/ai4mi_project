@@ -99,7 +99,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    net_cls = ENet_2_5d if args.slices > 1 else datasets_params[args.dataset]['net']
+    net = net_cls(1, K, kernels=kernels, factor=factor)
     net.init_weights()
     net.to(device)
 
@@ -108,7 +109,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
-    slices: int = datasets_params[args.dataset].get('slices', 1)
+    slices: int = args.slices
     root_dir = args.data_root / args.dataset
 
 
@@ -189,6 +190,9 @@ def runTraining(args):
                 tq_iter = tqdm_(enumerate(loader), total=len(loader), desc=desc)
                 for i, data in tq_iter:
                     img = data['images'].to(device)
+                    if args.debug:
+                        print(f">> {m} batch {i}: {img.shape=}, {data['stems']=}, {data['gts'].shape=}")
+
                     gt = data['gts'].to(device)
 
                     if opt:  # So only for training
@@ -267,6 +271,8 @@ def main():
                         help="Number of DataLoader worker processes.")
     parser.add_argument('--seed', default=0, type=int,
                         help="Random seed for reproducible model initialization and shuffling.")
+    parser.add_argument('--slices', default=1, type=int,
+                        help="Neighbouring slices per sample; >1 uses ENet_2_5d.")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',

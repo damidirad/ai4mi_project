@@ -79,16 +79,16 @@ class SliceDataset(Dataset):
     @staticmethod
     def _patient_id(path: Path) -> str:
         return path.stem.rsplit("_", 1)[0]
-
+    
     def _neighbor_img_path(self, index: int, offset: int) -> Path:
-        center_path = self.slice_paths[index]
-        neighbor_index = min(max(index + offset, 0), len(self.slice_paths) - 1)
-        neighbor_path = self.slice_paths[neighbor_index]
+        center_id = self._patient_id(self.slice_paths[index])
+        step = 1 if offset > 0 else -1
+        for o in range(offset, 0, -step):  # return to the center if no neighbor is found
+            j = index + o
+            if 0 <= j < len(self.slice_paths) and self._patient_id(self.slice_paths[j]) == center_id:
+                return self.slice_paths[j]
 
-        if self._patient_id(neighbor_path) != self._patient_id(center_path):
-            return center_path
-
-        return neighbor_path
+        return self.slice_paths[index]
 
     def _load_img_stack(self, index: int) -> Tensor:
         if self.slices == 1:
