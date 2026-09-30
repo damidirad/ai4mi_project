@@ -148,7 +148,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
-    with open(args.data_path / "spacing.pkl", "rb") as f:
+    with open(args.data_root / args.dataset / "spacing.pkl", "rb") as f:
         spacing_dict = pickle.load(f)
 
     if args.mode == "full":
@@ -185,9 +185,6 @@ def runTraining(args):
                     loader = val_loader
                     log_loss = log_loss_val
                     log_dice = log_dice_val
-
-                    if val_dest.exists(): 
-                        rmtree(val_dest)
 
                     # Collect validation slices for 3D Dice
                     patient_preds = {}
