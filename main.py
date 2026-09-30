@@ -50,9 +50,13 @@ from utils import (Dcm,
                    probs2class,
                    tqdm_,
                    dice_coef,
-                   save_images)
+                   save_images,
+                   dice_3d,
+                   hausdorff95,
+                   assd)
 
 from losses import (CrossEntropy)
+import pickle
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -144,6 +148,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
+    with open(args.data_path / "spacing.pkl", "rb") as f:
+        spacing_dict = pickle.load(f)
 
     if args.mode == "full":
         loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
@@ -180,6 +186,17 @@ def runTraining(args):
                     log_loss = log_loss_val
                     log_dice = log_dice_val
 
+                    if val_dest.exists(): 
+                        rmtree(val_dest)
+
+                    # Collect validation slices for 3D Dice
+                    patient_preds = {}
+                    patient_gts = {}
+
+                    # Collecting hd95 and assd scores
+                    hd95_scores = []
+                    assd_scores = []
+
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
                 if m == 'val':
                     val_dest = args.dest / f"iter{e:03d}" / m
@@ -207,6 +224,19 @@ def runTraining(args):
 
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
+                    if m == 'val':
+                        for b, stem in enumerate(data['stems']):
+                            patient_id, slice_id = str(stem).rsplit("_", 1)
+                            slice_id = int(slice_id)
+
+                            if patient_id not in patient_preds:
+                                patient_preds[patient_id] = {}
+                                patient_gts[patient_id] = {}
+
+                            patient_preds[patient_id][slice_id] = pred_seg[b].cpu()
+                            patient_gts[patient_id][slice_id] = gt[b].cpu()
+
+
                     log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
 
                     loss = loss_fn(pred_probs, gt)
@@ -234,15 +264,78 @@ def runTraining(args):
                                          for k in range(1, K)}
                     tq_iter.set_postfix(postfix_dict)
 
+        if m == 'val':
+            dice_3d_scores = []
+
+            for patient_id in sorted(patient_preds):
+                slice_ids = sorted(patient_preds[patient_id])
+                dx, dy, dz = spacing_dict[patient_id]
+                spacing = (dz, dx, dy)
+
+                pred_volume = torch.stack(
+                    [patient_preds[patient_id][sid] for sid in slice_ids],
+                    dim=0
+                )
+
+                gt_volume = torch.stack(
+                    [patient_gts[patient_id][sid] for sid in slice_ids],
+                    dim=0
+                )
+
+                # [D, K, H, W] -> [1, K, D, H, W]
+                pred_volume = pred_volume.permute(1, 0, 2, 3).unsqueeze(0)
+                gt_volume = gt_volume.permute(1, 0, 2, 3).unsqueeze(0)
+
+                patient_dice = dice_3d(gt_volume, pred_volume)
+                patient_hd95 = hausdorff95(gt_volume, pred_volume, spacing=spacing)
+                patient_assd = assd(gt_volume, pred_volume, spacing=spacing)
+
+                dice_3d_scores.append(patient_dice.squeeze(0))
+                hd95_scores.append(patient_hd95.squeeze(0))
+                assd_scores.append(patient_assd.squeeze(0))
+
+            dice_3d_scores = torch.stack(dice_3d_scores)
+            hd95_scores = torch.stack(hd95_scores)
+            assd_scores = torch.stack(assd_scores)
+
+            # Save [N_patients, K] for this epoch
+            np.save(
+                args.dest / f"iter{e:03d}" / "dice_3d_val.npy",
+                dice_3d_scores.numpy()
+            )
+            np.save(
+                args.dest / f"iter{e:03d}" / "hd95_val.npy",
+                hd95_scores.numpy()
+            )
+            np.save(
+                args.dest / f"iter{e:03d}" / "assd_val.npy",
+                assd_scores.numpy()
+            )
+
+            # Mean foreground 3D Dice, ignoring background
+            current_dice = dice_3d_scores[:, 1:].mean().item()
+
+            finite_hd95 = hd95_scores[:, 1:][torch.isfinite(hd95_scores[:, 1:])]
+            finite_assd = assd_scores[:, 1:][torch.isfinite(assd_scores[:, 1:])]
+
+            mean_hd95 = finite_hd95.mean().item()
+            mean_assd = finite_assd.mean().item()
+
+            print(
+                f">>> 3D metrics at epoch {e}: "
+                f"3D Dice={current_dice:05.3f}, "
+                f"HD95={mean_hd95:05.2f} mm, "
+                f"ASSD={mean_assd:05.2f} mm"
+            )
+
         # I save it at each epochs, in case the code crashes or I decide to stop it early
         np.save(args.dest / "loss_tra.npy", log_loss_tra)
         np.save(args.dest / "dice_tra.npy", log_dice_tra)
         np.save(args.dest / "loss_val.npy", log_loss_val)
         np.save(args.dest / "dice_val.npy", log_dice_val)
 
-        current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
-            message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
+            message = f">>> Improved 3D dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
             with open(args.dest / "best_epoch.txt", 'w') as f:
