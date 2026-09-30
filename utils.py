@@ -22,6 +22,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from scipy.ndimage import binary_erosion, distance_transform_edt
+
 from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
@@ -176,3 +178,169 @@ def union(a: Tensor, b: Tensor) -> Tensor:
     assert sset(res, [0, 1])
 
     return res
+
+
+# New metrics
+def dice_3d(label: Tensor, pred: Tensor, smooth: float = 1e-8) -> Tensor:
+    """
+    Calculate volumetric 3D Dice per patient and per class.
+
+    Args:
+        label: one-hot ground truth, shape [B, K, D, H, W]
+        pred:  one-hot prediction, shape [B, K, D, H, W]
+
+    Returns:
+        Dice scores, shape [B, K]
+    """
+    assert label.ndim == 5, f"Expected 5D label, got {label.shape}"
+    assert pred.ndim == 5, f"Expected 5D prediction, got {pred.shape}"
+    assert label.shape == pred.shape
+
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    return meta_dice("bk...->bk", label, pred, smooth)
+
+
+def hausdorff95(label: Tensor, pred: Tensor, spacing: tuple[float, ...] | None = None) -> Tensor:
+    """
+    Compute the 95th percentile Hausdorff distance for each
+    batch element and class.
+
+    label/pred: [B, K, ...]
+    spacing: physical voxel spacing in mm.
+
+    Returns:
+        Tensor of shape [B, K], in mm if spacing is supplied.
+    """
+    assert label.shape == pred.shape
+    assert label.ndim >= 3
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    if spacing is None:
+        spacing = (1.0,) * (label.ndim - 2)
+
+    assert len(spacing) == label.ndim - 2
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    results = []
+
+    for b in range(label.shape[0]):
+        batch_results = []
+
+        for k in range(label.shape[1]):
+            gt = label_np[b, k]
+            pr = pred_np[b, k]
+
+            gt_surface = surface(gt)
+            pr_surface = surface(pr)
+
+            # Both empty -> perfect agreement
+            if not gt.any() and not pr.any():
+                batch_results.append(0.0)
+                continue
+
+            # One empty -> distance is undefined
+            if not gt.any() or not pr.any():
+                batch_results.append(float("inf"))
+                continue
+
+            gt_dist = distance_transform_edt(~gt_surface, sampling=spacing)
+
+            pr_dist = distance_transform_edt(~pr_surface, sampling=spacing)
+
+            gt_to_pr = pr_dist[gt_surface]
+            pr_to_gt = gt_dist[pr_surface]
+
+            distances = np.concatenate([gt_to_pr, pr_to_gt])
+
+            batch_results.append(float(np.percentile(distances, 95)))
+
+        results.append(batch_results)
+
+    return torch.tensor(results,
+        dtype=torch.float32,
+        device=label.device
+    )
+
+
+def surface(mask: np.ndarray) -> np.ndarray:
+    """
+    Extract the surface voxels of a binary segmentation mask.
+    """
+    if not np.any(mask):
+        return np.zeros_like(mask, dtype=bool)
+
+    structure = np.ones((3,) * mask.ndim, dtype=bool)
+    eroded = binary_erosion(mask, structure=structure, border_value=0)
+
+    return mask & ~eroded
+
+
+
+def assd(label: Tensor, pred: Tensor, spacing: tuple[float, ...] | None = None) -> Tensor:
+    """
+    Compute Average Symmetric Surface Distance.
+
+    label/pred: [B, K, ...]
+    spacing: physical voxel spacing in mm.
+
+    Returns:
+        Tensor of shape [B, K], in mm if spacing is supplied.
+    """
+    assert label.shape == pred.shape
+    assert label.ndim >= 3
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    if spacing is None:
+        spacing = (1.0,) * (label.ndim - 2)
+
+    assert len(spacing) == label.ndim - 2
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    results = []
+
+    for b in range(label.shape[0]):
+        batch_results = []
+
+        for k in range(label.shape[1]):
+            gt = label_np[b, k]
+            pr = pred_np[b, k]
+
+            gt_surface = surface(gt)
+            pr_surface = surface(pr)
+
+            # Both empty -> perfect agreement
+            if not gt.any() and not pr.any():
+                batch_results.append(0.0)
+                continue
+
+            # One empty -> undefined
+            if not gt.any() or not pr.any():
+                batch_results.append(float("inf"))
+                continue
+
+            gt_dist = distance_transform_edt(~gt_surface, sampling=spacing)
+
+            pr_dist = distance_transform_edt(~pr_surface, sampling=spacing)
+
+            gt_to_pr = pr_dist[gt_surface]
+            pr_to_gt = gt_dist[pr_surface]
+
+            distances = np.concatenate([gt_to_pr, pr_to_gt])
+
+            batch_results.append(float(np.mean(distances)))
+
+        results.append(batch_results)
+
+    return torch.tensor(results,
+        dtype=torch.float32,
+        device=label.device
+    )
+
