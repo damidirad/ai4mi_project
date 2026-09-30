@@ -17,16 +17,17 @@ data/TOY2:
 
 
 # Extraction and slicing for Segthor
-## Original one
-data/segthor_part1: data/segthor_part1.zip
-	$(info $(yellow)unzip $<$(reset))
-	sha256sum -c data/segthor_part1.sha256
-	unzip -q $<
-	rm -f $@/.DS_STORE
 
-data/SEGTHOR: data/segthor_part1
-	$(info $(green)python $(CFLAGS) slice_segthor.py$(reset))
+## Full training set
+data/segthor_train_full: data/segthor_train_full.zip
+	@echo "$(yellow)unzip $<$(reset)"
+	unzip -q $< -d $@
+	find $@ -name .DS_Store -delete
+
+data/SEGTHOR: data/segthor_train_full
+	@echo "$(green)python $(CFLAGS) slice_segthor.py$(reset)"
+	find $< -name .DS_Store -delete
 	rm -rf $@_tmp $@
-	python $(CFLAGS) slice_segthor.py --source_dir data/segthor_part1 --dest_dir $@_tmp \
+	python $(CFLAGS) slice_segthor.py --source_dir $< --dest_dir $@_tmp \
 		--shape 256 256 --retain 5
 	mv $@_tmp $@
