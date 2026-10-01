@@ -129,6 +129,27 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                               num_workers=args.workers,
                               shuffle=True)
 
+
+    # Calculate class frequencies from the training ground truth
+    class_counts = torch.zeros(K, dtype=torch.float64)
+
+    for data in train_loader:
+        gt = data['gts']  # [B, K, W, H]
+        class_counts += gt.sum(dim=(0, 2, 3)).double()
+
+    class_freq = class_counts / class_counts.sum()
+
+    # Inverse square-root frequency
+    weights = 1.0 / torch.sqrt(class_freq + 1e-10)
+
+    # Normalize so the average weight is 1
+    weights = weights / weights.mean()
+
+    print(">> Training class counts:", class_counts.tolist())
+    print(">> Training class frequencies:", class_freq.tolist())
+    print(">> Class weights:", weights.tolist())
+
+
     val_set = SliceDataset('val',
                            root_dir,
                            img_transform=img_transform,
@@ -142,12 +163,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
-    return (net, optimizer, device, train_loader, val_loader, K)
+    return (net, optimizer, device, train_loader, val_loader, K, weights.float())
 
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
-    net, optimizer, device, train_loader, val_loader, K = setup(args)
+    net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
     if args.debug:
         print(f">>> DEBUG train dataset size: {len(train_loader.dataset)}")
         print(f">>> DEBUG val dataset size: {len(val_loader.dataset)}")
@@ -158,9 +179,9 @@ def runTraining(args):
         spacing_dict = pickle.load(f)
 
     if args.mode == "full":
-        loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
+        loss_fn = CrossEntropy(idk=list(range(K)), weights=weights)  # Supervise both background and foreground
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+        loss_fn = CrossEntropy(idk=[0, 1, 3, 4], weights=weights)  # Do not supervise the heart (class 2)
     else:
         raise ValueError(args.mode, args.dataset)
 

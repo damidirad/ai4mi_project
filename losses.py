@@ -32,6 +32,7 @@ class CrossEntropy():
     def __init__(self, **kwargs):
         # Self.idk is used to filter out some classes of the target mask. Use fancy indexing
         self.idk = kwargs['idk']
+        self.weights = kwargs.get('weights', None)
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
     def __call__(self, pred_softmax, weak_target):
@@ -41,6 +42,10 @@ class CrossEntropy():
 
         log_p = (pred_softmax[:, self.idk, ...] + 1e-10).log()
         mask = weak_target[:, self.idk, ...].float()
+
+        if self.weights is not None:
+            weights = self.weights[self.idk].to(mask.device).view(1, -1, 1, 1)
+            mask = mask * weights
 
         loss = - einsum("bkwh,bkwh->", mask, log_p)
         loss /= mask.sum() + 1e-10
