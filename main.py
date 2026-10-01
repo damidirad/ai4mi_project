@@ -109,7 +109,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     net.to(device)
 
     lr = 0.0005
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    if args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    elif args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=1e-2)
+    else:
+        raise ValueError(args.optimizer)
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
@@ -169,6 +174,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
+
+    # Decays the LR from its initial value to 0 over all epochs; stepped once per epoch
+    scheduler = None
+    if args.scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     if args.debug:
         print(f">>> DEBUG train dataset size: {len(train_loader.dataset)}")
         print(f">>> DEBUG val dataset size: {len(val_loader.dataset)}")
@@ -192,10 +202,15 @@ def runTraining(args):
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
     log_h95_val: Tensor = torch.zeros((args.epochs,))
     log_assd_val: Tensor = torch.zeros((args.epochs,))
+    log_lr: Tensor = torch.zeros((args.epochs,))  # LR used during each epoch
 
     best_dice: float = 0
 
     for e in range(args.epochs):
+        log_lr[e] = optimizer.param_groups[0]['lr']
+        print(f">> Learning rate for epoch {e}: {log_lr[e]:.2e}")
+
+
         for m in ['train', 'val']:
             match m:
                 case 'train':
@@ -448,7 +463,11 @@ def runTraining(args):
                 f"ASSD={mean_assd:05.2f} mm"
             )
 
+        if scheduler is not None:
+            scheduler.step()
+
         # I save it at each epochs, in case the code crashes or I decide to stop it early
+        np.save(args.dest / "lr.npy", log_lr)
         np.save(args.dest / "loss_tra.npy", log_loss_tra)
         np.save(args.dest / "dice_tra.npy", log_dice_tra)
         np.save(args.dest / "loss_val.npy", log_loss_val)
@@ -488,6 +507,11 @@ def main():
                         help="Random seed for reproducible model initialization and shuffling.")
     parser.add_argument('--slices', default=1, type=int,
                         help="Neighbouring slices per sample; >1 uses ENet_2_5d.")
+
+    parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw'],
+                        help="adam: original setup; adamw: Adam with decoupled weight decay (1e-2).")
+    parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
+                        help="none: fixed LR; cosine: CosineAnnealingLR from the initial LR to 0 over all epochs.")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
