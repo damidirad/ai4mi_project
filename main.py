@@ -55,7 +55,7 @@ from utils import (Dcm,
                    hausdorff95,
                    assd)
 
-from losses import (CrossEntropy)
+from losses import (CrossEntropy, DiceLoss, CEDiceLoss, BoundaryLoss, CEDiceBoundaryLoss)
 import pickle
 
 datasets_params: dict[str, dict[str, Any]] = {}
@@ -189,11 +189,23 @@ def runTraining(args):
         spacing_dict = pickle.load(f)
 
     if args.mode == "full":
-        loss_fn = CrossEntropy(idk=list(range(K)), weights=weights)  # Supervise both background and foreground
+        idk = list(range(K))  # Supervise both background and foreground
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        loss_fn = CrossEntropy(idk=[0, 1, 3, 4], weights=weights)  # Do not supervise the heart (class 2)
+        idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
         raise ValueError(args.mode, args.dataset)
+
+    match args.loss:
+        case 'ce':
+            loss_fn = CrossEntropy(idk=idk, weights=weights)
+        case 'dice':
+            loss_fn = DiceLoss(idk=idk)
+        case 'ce_dice':
+            loss_fn = CEDiceLoss(idk=idk, weights=weights)
+        case 'boundary':
+            loss_fn = BoundaryLoss(idk=idk)
+        case 'ce_dice_boundary':
+            loss_fn = CEDiceBoundaryLoss(idk=idk, weights=weights)
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
@@ -497,6 +509,9 @@ def main():
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
+    parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'ce_dice', 'boundary', 'ce_dice_boundary'],
+                        help="Loss function: cross-entropy (baseline), Dice, CE+Dice, "
+                             "boundary (distance-map based), or CE+Dice+boundary.")
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
     parser.add_argument('--data_root', type=Path, default=Path('data'),
