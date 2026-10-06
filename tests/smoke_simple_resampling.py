@@ -52,7 +52,7 @@ def main():
         sys.executable, '-u', str(PROJECT / 'slice_segthor.py'),
         '--source_dir', str(source), '--dest_dir', str(output),
         '--shape', '256', '256', '--retains', '1', '--seed', '0',
-        '--resample', '--process', str(args.process),
+        '--resample', 'xy', '--process', str(args.process),
     ]
     print('Running:', ' '.join(command), flush=True)
     with (work / 'preprocessing.log').open('w') as log:

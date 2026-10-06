@@ -1,7 +1,9 @@
 data/*
 !data/*.b3sum
 !data/*.sha256
+docs/
 results/
+tests/
 volumes/
 ai4mi/
 __pycache__/

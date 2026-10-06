@@ -40,7 +40,7 @@ from torch.utils.data import DataLoader
 
 from functools import partial 
 
-from dataset import SliceDataset
+from dataset import build_dataset
 from ShallowNet import shallowCNN
 from ENet import ENet
 from ENet_2_5d import ENet_2_5d
@@ -89,6 +89,8 @@ def gt_transform(K, img):
         return img[0]
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
+    if getattr(args, 'tiling', False):
+        raise ValueError('Use runTraining for the dedicated tiled training route')
     # Networks and scheduler
     use_gpu = args.gpu
 
@@ -123,10 +125,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 
-    train_set = SliceDataset('train',
+    train_set = build_dataset('train',
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
+                             tiling=getattr(args, 'tiling', False),
                              slices=slices,
                              debug=args.debug)
     train_loader = DataLoader(train_set,
@@ -155,10 +158,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     print(">> Class weights:", weights.tolist())
 
 
-    val_set = SliceDataset('val',
+    val_set = build_dataset('val',
                            root_dir,
                            img_transform=img_transform,
                            gt_transform=partial(gt_transform, K),
+                           tiling=getattr(args, 'tiling', False),
                            slices=slices,
                            debug=args.debug)
     val_loader = DataLoader(val_set,
@@ -172,6 +176,9 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 def runTraining(args):
+    if getattr(args, 'tiling', False):
+        from train_tiled import run_tiled_training
+        return run_tiled_training(args)
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
 
@@ -503,6 +510,87 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
+def check_data(args):
+    """Load a batch per split without creating a model, optimizer or outputs."""
+    K = datasets_params[args.dataset]['K']
+    if args.tiling and K != 5:
+        raise ValueError('Tiled data currently uses the five-class SegTHOR encoding')
+    check_loss = getattr(args, 'check_loss', False)
+    if check_loss and not args.tiling:
+        raise ValueError('--check-loss requires --tiling')
+    if check_loss:
+        from tiled_losses import validate_tiled_loss, make_tiled_loss, inverse_frequency_weights
+        validate_tiled_loss(args.loss)
+        if args.mode == 'full':
+            idk = list(range(K))
+        elif args.mode == 'partial' and args.dataset == 'SEGTHOR':
+            idk = [0, 1, 3, 4]
+        else:
+            raise ValueError('Unsupported tiled supervision mode')
+    sizes = []
+    signatures = []
+    for split in ('train', 'val'):
+        dataset = build_dataset(split, args.data_root / args.dataset,
+            tiling=args.tiling, img_transform=img_transform,
+            gt_transform=partial(gt_transform, K), slices=args.slices, debug=args.debug)
+        if len(dataset) == 0:
+            raise ValueError(f'Empty {split} dataset')
+        batch = next(iter(DataLoader(dataset, batch_size=datasets_params[args.dataset]['B'],
+                                    num_workers=args.workers, shuffle=False)))
+        sizes.append(tuple(batch['images'].shape[-2:]))
+        if args.tiling:
+            signatures.append(dataset.preprocessing_signature)
+        print(f"{split}: {len(dataset)} samples; images={tuple(batch['images'].shape)}, "
+              f"labels={tuple(batch['gts'].shape)}")
+        if check_loss:
+            counts = dataset.class_counts()
+            if split == 'train':
+                class_weights = inverse_frequency_weights(counts)
+            criterion = make_tiled_loss(dataset, args.loss, idk, class_weights, counts=counts)
+            # Diagnostic logits only: no model, optimizer or training is run.
+            logits = torch.zeros_like(batch['gts'], dtype=torch.float32, requires_grad=True)
+            loss = criterion(logits, batch['gts'], batch['pixel_weights'])
+            loss.backward()
+            if not torch.isfinite(loss) or not torch.isfinite(logits.grad).all():
+                raise ValueError('Nonfinite tiled loss or gradients')
+            padded = (~batch['valid_mask']).unsqueeze(1).expand_as(logits)
+            if torch.any(logits.grad[padded] != 0):
+                raise ValueError('Padding contributed to tiled gradients')
+            print(f'{split}: tiled CE={loss.item():.6f}; padding gradients zero')
+    if args.tiling and signatures[0] != signatures[1]:
+        raise ValueError('Training and validation preprocessing configurations differ')
+    if sizes[0] != sizes[1]:
+        raise ValueError('Training and validation spatial sizes must match')
+
+
+def evaluate_tiled_checkpoint(args):
+    from evaluate_tiled import evaluate_model
+    if args.dest.exists():
+        raise FileExistsError('Use a new evaluation destination')
+    if args.debug:
+        raise ValueError('Volume evaluation requires complete patients; disable --debug')
+    params = datasets_params[args.dataset]
+    if params['K'] != 5:
+        raise ValueError('Tiled evaluation requires the five-class SegTHOR model')
+    dataset = build_dataset('val', args.data_root / args.dataset, tiling=True,
+        img_transform=img_transform, gt_transform=partial(gt_transform, 5), slices=args.slices)
+    if args.gpu:
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            raise ValueError('--gpu requested but no GPU is available')
+    else:
+        device = torch.device('cpu')
+    model_class = ENet_2_5d if args.slices > 1 else params['net']
+    model = model_class(1, 5, kernels=params.get('kernels', 8), factor=params.get('factor', 2)).to(device)
+    state = torch.load(args.evaluate_checkpoint, map_location='cpu', weights_only=True)
+    model.load_state_dict(state, strict=True)
+    report = evaluate_model(model, dataset, args.dest, batch_size=params['B'], device=device)
+    print(f"Original-grid mean foreground Dice: {report['mean_foreground_dice']:.6f}")
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -528,12 +616,23 @@ def main():
     parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
                         help="none: fixed LR; cosine: CosineAnnealingLR from the initial LR to 0 over all epochs.")
 
+    parser.add_argument('--tiling', action='store_true', help='Load the tiled dataset layout')
+    parser.add_argument('--check-data', action='store_true',
+                        help='Check train/val batches without training or writing results')
+    parser.add_argument('--evaluate-checkpoint', type=Path,
+                        help='With --tiling: evaluate a state_dict on original CT grids for val')
+    parser.add_argument('--check-loss', action='store_true',
+                        help='With --tiling --check-data: check CE and gradients on diagnostic logits')
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.evaluate_checkpoint and (not args.tiling or args.check_data or args.check_loss):
+        parser.error('--evaluate-checkpoint requires --tiling and cannot combine with check modes')
+    if args.check_loss and not (args.tiling and args.check_data):
+        parser.error('--check-loss requires --tiling --check-data')
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -541,7 +640,12 @@ def main():
 
     pprint(args)
 
-    runTraining(args)
+    if args.evaluate_checkpoint:
+        evaluate_tiled_checkpoint(args)
+    elif args.check_data:
+        check_data(args)
+    else:
+        runTraining(args)
 
 
 if __name__ == '__main__':
