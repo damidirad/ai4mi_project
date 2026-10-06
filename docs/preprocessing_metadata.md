@@ -47,3 +47,10 @@ PYTHONPATH=tests ai4mi/bin/python -m unittest test_preprocessing_metadata test_g
 
 Tests cover JSON round trips, missing/inconsistent fields, resize coordinates,
 misaligned labels and real small NIfTI-to-PNG processing for none/xy/xyz.
+
+## Stage 3 extension
+
+Full-slice records remain schema 1. Tiled output uses schema 2 with mandatory
+tile positions, padding and storage conventions; its output grid equals the
+unpadded working grid. `--tiling` always enables metadata, independently of
+`--save_metadata`. See [tile extraction](tiling.md).

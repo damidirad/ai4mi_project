@@ -313,3 +313,10 @@ Windows has different paths names (`\` in stead of `/`), so the default regex in
 Preprocessing accepts `--resample none|xy|xyz` (default: `none`).
 Use `xy` to preserve Z or `xyz` to resample all axes. See
 [resampling CLI](docs/resampling_cli.md) for target spacing and migration examples.
+
+### Optional tile preprocessing
+
+`slice_segthor.py --tiling` extracts fixed tiles instead of resizing full slices.
+It supports every resampling mode and writes geometry and padding masks.
+See [tile extraction](docs/tiling.md). This stage prepares data; tiled training
+will be connected in the following implementation stages.

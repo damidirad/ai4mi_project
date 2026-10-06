@@ -42,3 +42,10 @@ this migration (removed helpers and changed normalization/spacing contracts).
 Add `--save_metadata` to write per-patient JSON alongside the PNGs.
 See [metadata format and usage](preprocessing_metadata.md). The option defaults
 to off and does not alter PNG values or `spacing.pkl`.
+
+## Optional tile extraction
+
+Add `--tiling` to cut fixed XY tiles instead of resizing each full slice.
+`--tile-size X Y` defaults to 256 256 and `--tile-stride X Y` to 128 128.
+Tiling always writes metadata. See [tile extraction](tiling.md) for storage
+and the current stage-3 scope; network loading follows in stage 4.

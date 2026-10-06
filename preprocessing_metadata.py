@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from geometry import Grid, grid_after_resampling, voxel_mapping
+from tiling import TileLayout
 
 
 SCHEMA_VERSION = 1
@@ -28,7 +29,7 @@ def _encode(grid):
 
 
 def build_metadata(patient_id, split, source_path, original, working_shape,
-                   target_spacing, slice_shape, hu_window, source_spacing=None):
+                   target_spacing, slice_shape, hu_window, source_spacing=None, tile_layout=None):
     mode = 'none' if target_spacing is None else {2: 'xy', 3: 'xyz'}.get(len(target_spacing))
     working = grid_after_resampling(original, working_shape)
     output = resized_slice_grid(working, slice_shape)
@@ -54,6 +55,13 @@ def build_metadata(patient_id, split, source_path, original, working_shape,
         'output': _encode(output),
         'output_to_original': voxel_mapping(original, output).tolist(),
     }
+    if tile_layout is not None:
+        if tile_layout.shape != working.shape[:2] or output.shape != working.shape:
+            raise ValueError('Tiled output must preserve the working grid')
+        value['schema_version'] = 2
+        value['layout'] = 'tiles'
+        value['tiling'] = tile_layout.to_dict()
+        value['interpolation']['slice_resize'] = 'none'
     validate_metadata(value)
     return value
 
@@ -61,7 +69,7 @@ def build_metadata(patient_id, split, source_path, original, working_shape,
 def validate_metadata(value):
     """Reject missing, unknown-version or internally inconsistent records."""
     try:
-        if type(value['schema_version']) is not int or value['schema_version'] != SCHEMA_VERSION:
+        if type(value['schema_version']) is not int or value['schema_version'] not in (SCHEMA_VERSION, 2):
             raise ValueError('Unsupported metadata schema version')
         if (value['coordinate_system'], value['spatial_units'], value['array_axes']) != ('RAS', 'mm', 'XYZ'):
             raise ValueError('Unsupported coordinate convention')
@@ -94,7 +102,14 @@ def validate_metadata(value):
         else:
             raise ValueError('Invalid resampling mode')
         expected_working = grid_after_resampling(original, working.shape)
-        expected_output = resized_slice_grid(working, output.shape[:2])
+        tiled = value['schema_version'] == 2
+        if tiled:
+            if value['layout'] != 'tiles':
+                raise ValueError('Schema 2 requires tiled layout')
+            layout = TileLayout(working.shape[:2], value['tiling']['size'], value['tiling']['stride'])
+            if value['tiling'] != layout.to_dict():
+                raise ValueError('Inconsistent tile positions, padding or storage convention')
+        expected_output = working if tiled else resized_slice_grid(working, output.shape[:2])
         for actual, expected in [(working, expected_working), (output, expected_output)]:
             if actual.shape != expected.shape or not np.allclose(actual.affine, expected.affine, rtol=0, atol=1e-8):
                 raise ValueError('Inconsistent grid geometry')
@@ -112,7 +127,7 @@ def validate_metadata(value):
         else:
             raise ValueError('Unknown intensity normalization')
         if value['interpolation'] != {'resampling': 'scipy_zoom_grid_mode_false',
-                'slice_resize': 'skimage_resize_grid_mode_true', 'ct_order': 1,
+                'slice_resize': 'none' if tiled else 'skimage_resize_grid_mode_true', 'ct_order': 1,
                 'label_order': 0, 'antialias': False} or value['png_label_multiplier'] != 63:
             raise ValueError('Unsupported interpolation or label encoding')
     except (KeyError, TypeError, OverflowError) as error:

@@ -40,6 +40,7 @@ from skimage.transform import resize
 from utils import map_, tqdm_
 from geometry import grid_from_nifti
 from preprocessing_metadata import build_metadata, save_metadata
+from tiling import TileLayout, write_patient_tiles
 
 
 HU_PERCENTILES: tuple[float, float] = (0.5, 99.5)
@@ -106,7 +107,8 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, target_spacing: tuple[float, ...] | None = None,
                   hu_window: tuple[float, float] | None = None,
-                  save_geometry: bool = False) -> tuple[float, float, float]:
+                  save_geometry: bool = False,
+                  tiling: bool = False, tile_size=(256, 256), tile_stride=(128, 128)) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -116,6 +118,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
+    save_geometry = save_geometry or tiling
     original_grid = None
     if save_geometry:
         if nib_obj.header.get_xyzt_units()[0] != 'mm':
@@ -146,11 +149,18 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         if len(target_spacing) == 3:
             dz = target_spacing[2]
 
+    layout = TileLayout(ct.shape[:2], tile_size, tile_stride) if tiling else None
     metadata = None
     if save_geometry:
         metadata = build_metadata(id_, dest_path.name, ct_path, original_grid,
-                                  ct.shape, target_spacing, shape, hu_window,
-                                  source_spacing=nib_obj.header.get_zooms())
+                                  ct.shape, target_spacing, ct.shape[:2] if tiling else shape, hu_window,
+                                  source_spacing=nib_obj.header.get_zooms(), tile_layout=layout)
+
+    if tiling:
+        norm_ct = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
+        write_patient_tiles(dest_path / 'tiles' / id_, norm_ct, gt, layout)
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
+        return tuple(np.linalg.norm(np.asarray(metadata['working']['affine_ras_mm'])[:3, :3], axis=0))
 
     orig_x, orig_y = ct.shape[:2]
 
@@ -256,7 +266,10 @@ def main(args: argparse.Namespace):
                                  test_mode=mode == 'test',
                                  target_spacing=target_spacing,
                                  hu_window=window,
-                                 save_geometry=getattr(args, 'save_metadata', False))
+                                 save_geometry=getattr(args, 'save_metadata', False),
+                                 tiling=getattr(args, 'tiling', False),
+                                 tile_size=getattr(args, 'tile_size', None) or (256, 256),
+                                 tile_stride=getattr(args, 'tile_stride', None) or (128, 128))
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -281,6 +294,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
+    parser.add_argument('--tiling', action='store_true',
+                        help='Extract XY tiles instead of resizing slices; always saves metadata')
+    parser.add_argument('--tile-size', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile dimensions (default with --tiling: 256 256)')
+    parser.add_argument('--tile-stride', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile step (default with --tiling: 128 128)')
     parser.add_argument('--save_metadata', action='store_true',
                         help='Save validated per-patient geometry and preprocessing JSON')
     parser.add_argument('--hu_clip', action='store_true', help="Clip HU to training-set organ percentiles")
@@ -294,6 +313,15 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
+    if not args.tiling and (args.tile_size is not None or args.tile_stride is not None):
+        parser.error('--tile-size and --tile-stride require --tiling')
+    if args.tiling:
+        try:
+            TileLayout((1, 1), args.tile_size or (256, 256), args.tile_stride or (128, 128))
+        except ValueError as error:
+            parser.error(str(error))
+        if args.shape != [256, 256]:
+            parser.error('--shape applies to full slices; use --tile-size with --tiling')
     if args.target_spacing is not None:
         if args.resample == 'none':
             parser.error('--target_spacing requires --resample xy or --resample xyz')
