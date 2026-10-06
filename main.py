@@ -560,6 +560,34 @@ def check_data(args):
         raise ValueError('Training and validation spatial sizes must match')
 
 
+def evaluate_tiled_checkpoint(args):
+    from evaluate_tiled import evaluate_model
+    if args.dest.exists():
+        raise FileExistsError('Use a new evaluation destination')
+    if args.debug:
+        raise ValueError('Volume evaluation requires complete patients; disable --debug')
+    params = datasets_params[args.dataset]
+    if params['K'] != 5:
+        raise ValueError('Tiled evaluation requires the five-class SegTHOR model')
+    dataset = build_dataset('val', args.data_root / args.dataset, tiling=True,
+        img_transform=img_transform, gt_transform=partial(gt_transform, 5), slices=args.slices)
+    if args.gpu:
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            raise ValueError('--gpu requested but no GPU is available')
+    else:
+        device = torch.device('cpu')
+    model_class = ENet_2_5d if args.slices > 1 else params['net']
+    model = model_class(1, 5, kernels=params.get('kernels', 8), factor=params.get('factor', 2)).to(device)
+    state = torch.load(args.evaluate_checkpoint, map_location='cpu', weights_only=True)
+    model.load_state_dict(state, strict=True)
+    report = evaluate_model(model, dataset, args.dest, batch_size=params['B'], device=device)
+    print(f"Original-grid mean foreground Dice: {report['mean_foreground_dice']:.6f}")
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -588,6 +616,8 @@ def main():
     parser.add_argument('--tiling', action='store_true', help='Load the tiled dataset layout')
     parser.add_argument('--check-data', action='store_true',
                         help='Check train/val batches without training or writing results')
+    parser.add_argument('--evaluate-checkpoint', type=Path,
+                        help='With --tiling: evaluate a state_dict on original CT grids for val')
     parser.add_argument('--check-loss', action='store_true',
                         help='With --tiling --check-data: check CE and gradients on diagnostic logits')
     parser.add_argument('--gpu', action='store_true')
@@ -596,6 +626,8 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.evaluate_checkpoint and (not args.tiling or args.check_data or args.check_loss):
+        parser.error('--evaluate-checkpoint requires --tiling and cannot combine with check modes')
     if args.check_loss and not (args.tiling and args.check_data):
         parser.error('--check-loss requires --tiling --check-data')
 
@@ -605,7 +637,9 @@ def main():
 
     pprint(args)
 
-    if args.check_data:
+    if args.evaluate_checkpoint:
+        evaluate_tiled_checkpoint(args)
+    elif args.check_data:
         check_data(args)
     else:
         runTraining(args)

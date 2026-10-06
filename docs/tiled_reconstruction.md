@@ -49,7 +49,8 @@ This is a callable component, not yet a new inference CLI. No existing training
 or preprocessing route changes automatically. In particular, the returned
 volume is on the **working grid after resampling**. It must not be saved under
 the original CT affine unless both grids coincide. Original-grid restoration,
-NIfTI export and volume metrics are stage 7. Full tiled training remains blocked
+NIfTI export and volume metrics are now available in
+[stage 7](original_grid_evaluation.md). Full tiled training remains blocked
 until those pieces are connected.
 
 ## Verification

@@ -69,7 +69,8 @@ model performance score. Without `--check-loss`, batch checking retains its
 previous scope.
 
 Full tiled training still stops before model setup: working-grid reconstruction is available in [stage 6](tiled_reconstruction.md),
-but original-grid restoration and volume metric integration remain stage 7. This commit introduces the reusable loss
+and [stage 7](original_grid_evaluation.md) adds original-grid evaluation.
+The next stage must connect these pieces into the training loop. This commit introduces the reusable loss
 and dataset weights, not a partially working full training run.
 
 ## Verification

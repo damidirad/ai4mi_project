@@ -329,3 +329,7 @@ Full tiled training still awaits reconstruction and volume metric integration.
 Tile probabilities can now be combined on the working grid with
 `predict_working_volume`; see [tiled reconstruction](docs/tiled_reconstruction.md).
 Original-grid restoration and full training integration remain the next stage.
+
+For original-grid checkpoint evaluation, use `--tiling --evaluate-checkpoint
+PATH_TO_STATE_DICT.pt`; see [original-grid evaluation](docs/original_grid_evaluation.md).
+This writes validation NIfTI volumes and metrics without training.
