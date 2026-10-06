@@ -38,6 +38,8 @@ from skimage.io import imsave
 from skimage.transform import resize
 
 from utils import map_, tqdm_
+from geometry import grid_from_nifti
+from preprocessing_metadata import build_metadata, save_metadata
 
 
 HU_PERCENTILES: tuple[float, float] = (0.5, 99.5)
@@ -103,7 +105,8 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, target_spacing: tuple[float, ...] | None = None,
-                  hu_window: tuple[float, float] | None = None) -> tuple[float, float, float]:
+                  hu_window: tuple[float, float] | None = None,
+                  save_geometry: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -113,9 +116,23 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
+    original_grid = None
+    if save_geometry:
+        if nib_obj.header.get_xyzt_units()[0] != 'mm':
+            raise ValueError('Metadata export requires CT units in mm for the current resampler')
+        original_grid = grid_from_nifti(nib_obj)
+        if not np.allclose(original_grid.spacing, (dx, dy, dz), rtol=1e-6, atol=1e-8):
+            raise ValueError('CT affine and header spacing disagree')
+
     gt: np.ndarray
     if not test_mode:
-        gt = np.asarray(nib.load(str(id_path / "GT.nii.gz")).dataobj)
+        gt_obj = nib.load(str(id_path / "GT.nii.gz"))
+        gt = np.asarray(gt_obj.dataobj)
+        if save_geometry:
+            gt_grid = grid_from_nifti(gt_obj)
+            if gt_grid.shape != original_grid.shape or not np.allclose(
+                    gt_grid.affine, original_grid.affine, rtol=0, atol=1e-5):
+                raise ValueError('CT and labels must share the same physical grid')
         assert sanity_gt(gt, ct)
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
@@ -128,6 +145,12 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
         if len(target_spacing) == 3:
             dz = target_spacing[2]
+
+    metadata = None
+    if save_geometry:
+        metadata = build_metadata(id_, dest_path.name, ct_path, original_grid,
+                                  ct.shape, target_spacing, shape, hu_window,
+                                  source_spacing=nib_obj.header.get_zooms())
 
     orig_x, orig_y = ct.shape[:2]
 
@@ -151,6 +174,9 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / f"{id_}_{idz:04d}.png"), data)
+
+    if metadata is not None:
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
 
     return dx, dy, dz
 
@@ -229,7 +255,8 @@ def main(args: argparse.Namespace):
                                  shape=tuple(args.shape),
                                  test_mode=mode == 'test',
                                  target_spacing=target_spacing,
-                                 hu_window=window)
+                                 hu_window=window,
+                                 save_geometry=getattr(args, 'save_metadata', False))
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -254,6 +281,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
+    parser.add_argument('--save_metadata', action='store_true',
+                        help='Save validated per-patient geometry and preprocessing JSON')
     parser.add_argument('--hu_clip', action='store_true', help="Clip HU to training-set organ percentiles")
     parser.add_argument('--resample', choices=('none', 'xy', 'xyz'), default='none',
                         help="Voxel resampling: none (default), xy (preserve Z), or xyz")

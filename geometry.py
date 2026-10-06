@@ -1,4 +1,4 @@
-"""Geometry building blocks for tiling; not yet wired into preprocessing.
+"""Geometry building blocks for tiling and optional preprocessing metadata.
 
 Array axes are voxel X/Y/Z, not necessarily anatomical axes. World coordinates
 are NIfTI RAS in millimetres. Full affines preserve rotations, flips and shear.

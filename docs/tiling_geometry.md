@@ -1,8 +1,9 @@
 # Stage 1: geometry for the future optional tiling pipeline
 
-`geometry.py` is a standalone building block. It does not yet change the
-preprocessing CLI, write metadata, extract tiles or alter training. Those are
-separate stages. The existing `spacing.pkl` behavior is unchanged.
+`geometry.py` was introduced as a standalone building block in stage 1.
+Stage 2 now uses it for optional metadata export; see
+[preprocessing_metadata.md](preprocessing_metadata.md). Tile extraction and
+training integration remain later stages. Existing `spacing.pkl` behavior is unchanged.
 
 A `Grid` records the array shape and a full affine: a matrix mapping voxel-centre
 indices to physical positions in NIfTI RAS millimetres. Axis columns describe

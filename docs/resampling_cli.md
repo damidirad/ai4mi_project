@@ -36,3 +36,9 @@ ai4mi/bin/python -m unittest discover -s tests -p 'test_resampling_cli.py' -v
 
 The historical `test_simple_resampling.py` suite already had failures before
 this migration (removed helpers and changed normalization/spacing contracts).
+
+## Optional geometry metadata
+
+Add `--save_metadata` to write per-patient JSON alongside the PNGs.
+See [metadata format and usage](preprocessing_metadata.md). The option defaults
+to off and does not alter PNG values or `spacing.pkl`.
