@@ -6,6 +6,8 @@ volumes/
 ai4mi/
 __pycache__/
 .venv/
+jobs/
+slurm_logs/
 
 projects
 .DS_Store
