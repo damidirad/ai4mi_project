@@ -318,5 +318,6 @@ Use `xy` to preserve Z or `xyz` to resample all axes. See
 
 `slice_segthor.py --tiling` extracts fixed tiles instead of resizing full slices.
 It supports every resampling mode and writes geometry and padding masks.
-See [tile extraction](docs/tiling.md). This stage prepares data; tiled training
-will be connected in the following implementation stages.
+See [tile extraction](docs/tiling.md). Use `main.py --tiling --check-data` to inspect 2D/2.5D batches; see
+[the tileloader](docs/tiled_dataset.md). Tiled training awaits the loss and
+reconstruction stages.

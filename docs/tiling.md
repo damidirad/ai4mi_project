@@ -62,11 +62,10 @@ The existing CLI also requires a new destination directory for each run.
 
 ## Scope of this commit
 
-This step prepares tiles, masks and positions only. Loading tiles into the
-network comes in stage 4; excluding padding and correcting overlap in the loss
+This step prepares tiles, masks and positions only. Loading tiles into batches is now available in [stage 4](tiled_dataset.md); excluding padding and correcting overlap in the loss
 comes in stage 5. Reconstruction is also a later stage. These tiles are stored
-separately from the legacy `train/img` layout and cannot yet train through the
-existing full-slice loader. No model or loss has been changed.
+separately from the legacy `train/img` layout. The explicit tileloader supports
+batch checks; tiled training awaits the loss and reconstruction stages. No model or loss has been changed.
 
 Without `--tiling`, preprocessing continues to produce the existing full-slice
 PNGs. Supplying tile settings without `--tiling` is an error.

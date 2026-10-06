@@ -120,3 +120,13 @@ class SliceDataset(Dataset):
             data_dict["gts"] = gt
 
         return data_dict
+
+
+def build_dataset(subset, root_dir, *, tiling=False, **kwargs):
+    """Explicitly select the on-disk layout; never infer a training mode silently."""
+    if tiling:
+        from tiled_dataset import TiledDataset
+        return TiledDataset(subset, root_dir, **kwargs)
+    if (Path(root_dir) / subset / 'tiles').exists():
+        raise ValueError('Tiled data requires --tiling')
+    return SliceDataset(subset, root_dir, **kwargs)

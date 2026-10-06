@@ -40,7 +40,7 @@ from torch.utils.data import DataLoader
 
 from functools import partial 
 
-from dataset import SliceDataset
+from dataset import build_dataset
 from ShallowNet import shallowCNN
 from ENet import ENet
 from ENet_2_5d import ENet_2_5d
@@ -89,6 +89,8 @@ def gt_transform(K, img):
         return img[0]
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
+    if getattr(args, 'tiling', False):
+        raise ValueError('Tiled training awaits masked losses and reconstruction; use --tiling --check-data')
     # Networks and scheduler
     use_gpu = args.gpu
 
@@ -123,10 +125,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 
-    train_set = SliceDataset('train',
+    train_set = build_dataset('train',
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
+                             tiling=getattr(args, 'tiling', False),
                              slices=slices,
                              debug=args.debug)
     train_loader = DataLoader(train_set,
@@ -155,10 +158,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     print(">> Class weights:", weights.tolist())
 
 
-    val_set = SliceDataset('val',
+    val_set = build_dataset('val',
                            root_dir,
                            img_transform=img_transform,
                            gt_transform=partial(gt_transform, K),
+                           tiling=getattr(args, 'tiling', False),
                            slices=slices,
                            debug=args.debug)
     val_loader = DataLoader(val_set,
@@ -503,6 +507,32 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
+def check_data(args):
+    """Load a batch per split without creating a model, optimizer or outputs."""
+    K = datasets_params[args.dataset]['K']
+    if args.tiling and K != 5:
+        raise ValueError('Tiled data currently uses the five-class SegTHOR encoding')
+    sizes = []
+    signatures = []
+    for split in ('train', 'val'):
+        dataset = build_dataset(split, args.data_root / args.dataset,
+            tiling=args.tiling, img_transform=img_transform,
+            gt_transform=partial(gt_transform, K), slices=args.slices, debug=args.debug)
+        if len(dataset) == 0:
+            raise ValueError(f'Empty {split} dataset')
+        batch = next(iter(DataLoader(dataset, batch_size=datasets_params[args.dataset]['B'],
+                                    num_workers=args.workers, shuffle=False)))
+        sizes.append(tuple(batch['images'].shape[-2:]))
+        if args.tiling:
+            signatures.append(dataset.preprocessing_signature)
+        print(f"{split}: {len(dataset)} samples; images={tuple(batch['images'].shape)}, "
+              f"labels={tuple(batch['gts'].shape)}")
+    if args.tiling and signatures[0] != signatures[1]:
+        raise ValueError('Training and validation preprocessing configurations differ')
+    if sizes[0] != sizes[1]:
+        raise ValueError('Training and validation spatial sizes must match')
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -528,6 +558,9 @@ def main():
     parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
                         help="none: fixed LR; cosine: CosineAnnealingLR from the initial LR to 0 over all epochs.")
 
+    parser.add_argument('--tiling', action='store_true', help='Load the tiled dataset layout')
+    parser.add_argument('--check-data', action='store_true',
+                        help='Check train/val batches without training or writing results')
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
@@ -541,7 +574,10 @@ def main():
 
     pprint(args)
 
-    runTraining(args)
+    if args.check_data:
+        check_data(args)
+    else:
+        runTraining(args)
 
 
 if __name__ == '__main__':
