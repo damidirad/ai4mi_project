@@ -1,3 +1,8 @@
+> Historical report for `feature/simple-resampling`. The implementation and test
+> results below describe that branch. See [resampling_cli.md](resampling_cli.md)
+> for the current CLI. Historical spellings below are retained for provenance;
+> the runnable XY example uses the current spelling.
+
 # Introduction
 
 This document describes the changes made on the `feature/simple-resampling` branch. It is organized by commit to document what changed, why each change was introduced, and how it was verified.
@@ -83,7 +88,7 @@ Run from the project directory, replacing the source path with the dataset locat
 ai4mi/bin/python slice_segthor.py --source_dir /path/to/dataset --dest_dir data/baseline_xy --shape 256 256 --retains 5 --seed 0 --fold 0
 
 # Experiment: target derived from the training split
-ai4mi/bin/python slice_segthor.py --source_dir /path/to/dataset --dest_dir data/resampled_xy --shape 256 256 --retains 5 --seed 0 --fold 0 --resample
+ai4mi/bin/python slice_segthor.py --source_dir /path/to/dataset --dest_dir data/resampled_xy --shape 256 256 --retains 5 --seed 0 --fold 0 --resample xy
 ```
 
 For a manual target, append `--target_spacing 1.0 1.0` to the experiment command. Both outputs feed the existing ENet pipeline.

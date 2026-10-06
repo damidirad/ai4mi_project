@@ -38,6 +38,9 @@ from skimage.io import imsave
 from skimage.transform import resize
 
 from utils import map_, tqdm_
+from geometry import grid_from_nifti
+from preprocessing_metadata import build_metadata, save_metadata
+from tiling import TileLayout, write_patient_tiles
 
 
 HU_PERCENTILES: tuple[float, float] = (0.5, 99.5)
@@ -103,7 +106,9 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, target_spacing: tuple[float, ...] | None = None,
-                  hu_window: tuple[float, float] | None = None) -> tuple[float, float, float]:
+                  hu_window: tuple[float, float] | None = None,
+                  save_geometry: bool = False,
+                  tiling: bool = False, tile_size=(256, 256), tile_stride=(128, 128)) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -113,9 +118,24 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
+    save_geometry = save_geometry or tiling
+    original_grid = None
+    if save_geometry:
+        if nib_obj.header.get_xyzt_units()[0] != 'mm':
+            raise ValueError('Metadata export requires CT units in mm for the current resampler')
+        original_grid = grid_from_nifti(nib_obj)
+        if not np.allclose(original_grid.spacing, (dx, dy, dz), rtol=1e-6, atol=1e-8):
+            raise ValueError('CT affine and header spacing disagree')
+
     gt: np.ndarray
     if not test_mode:
-        gt = np.asarray(nib.load(str(id_path / "GT.nii.gz")).dataobj)
+        gt_obj = nib.load(str(id_path / "GT.nii.gz"))
+        gt = np.asarray(gt_obj.dataobj)
+        if save_geometry:
+            gt_grid = grid_from_nifti(gt_obj)
+            if gt_grid.shape != original_grid.shape or not np.allclose(
+                    gt_grid.affine, original_grid.affine, rtol=0, atol=1e-5):
+                raise ValueError('CT and labels must share the same physical grid')
         assert sanity_gt(gt, ct)
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
@@ -128,6 +148,19 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
         if len(target_spacing) == 3:
             dz = target_spacing[2]
+
+    layout = TileLayout(ct.shape[:2], tile_size, tile_stride) if tiling else None
+    metadata = None
+    if save_geometry:
+        metadata = build_metadata(id_, dest_path.name, ct_path, original_grid,
+                                  ct.shape, target_spacing, ct.shape[:2] if tiling else shape, hu_window,
+                                  source_spacing=nib_obj.header.get_zooms(), tile_layout=layout)
+
+    if tiling:
+        norm_ct = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
+        write_patient_tiles(dest_path / 'tiles' / id_, norm_ct, gt, layout)
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
+        return tuple(np.linalg.norm(np.asarray(metadata['working']['affine_ras_mm'])[:3, :3], axis=0))
 
     orig_x, orig_y = ct.shape[:2]
 
@@ -151,6 +184,9 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / f"{id_}_{idz:04d}.png"), data)
+
+    if metadata is not None:
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
 
     return dx, dy, dz
 
@@ -210,8 +246,8 @@ def main(args: argparse.Namespace):
     print(f"HU window: {window}")
 
     target_spacing = None
-    if args.resample or args.spatial_normalize:
-        dims = 3 if args.spatial_normalize else 2
+    if args.resample != "none":
+        dims = 3 if args.resample == "xyz" else 2
         target_spacing = tuple(args.target_spacing) if args.target_spacing else median_spacing(training_ids, src_path, dims)
         assert len(target_spacing) == dims, target_spacing
     print(f"Target spacing: {target_spacing}")
@@ -229,7 +265,11 @@ def main(args: argparse.Namespace):
                                  shape=tuple(args.shape),
                                  test_mode=mode == 'test',
                                  target_spacing=target_spacing,
-                                 hu_window=window)
+                                 hu_window=window,
+                                 save_geometry=getattr(args, 'save_metadata', False),
+                                 tiling=getattr(args, 'tiling', False),
+                                 tile_size=getattr(args, 'tile_size', None) or (256, 256),
+                                 tile_stride=getattr(args, 'tile_stride', None) or (128, 128))
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -254,18 +294,42 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
+    parser.add_argument('--tiling', action='store_true',
+                        help='Extract XY tiles instead of resizing slices; always saves metadata')
+    parser.add_argument('--tile-size', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile dimensions (default with --tiling: 256 256)')
+    parser.add_argument('--tile-stride', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile step (default with --tiling: 128 128)')
+    parser.add_argument('--save_metadata', action='store_true',
+                        help='Save validated per-patient geometry and preprocessing JSON')
     parser.add_argument('--hu_clip', action='store_true', help="Clip HU to training-set organ percentiles")
-    parser.add_argument('--resample', action='store_true', help="Resample X/Y to a common spacing")
-    parser.add_argument('--spatial_normalize', action='store_true', help="Resample X/Y/Z to a common spacing")
+    parser.add_argument('--resample', choices=('none', 'xy', 'xyz'), default='none',
+                        help="Voxel resampling: none (default), xy (preserve Z), or xyz")
     parser.add_argument('--target_spacing', type=float, nargs="+", default=None,
-                        help="Defaults to the training-set median")
+                        help="Spacing in mm: DX DY for xy, DX DY DZ for xyz; defaults to training-set medians")
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
-    assert not (args.resample and args.spatial_normalize)
+    if not args.tiling and (args.tile_size is not None or args.tile_stride is not None):
+        parser.error('--tile-size and --tile-stride require --tiling')
+    if args.tiling:
+        try:
+            TileLayout((1, 1), args.tile_size or (256, 256), args.tile_stride or (128, 128))
+        except ValueError as error:
+            parser.error(str(error))
+        if args.shape != [256, 256]:
+            parser.error('--shape applies to full slices; use --tile-size with --tiling')
+    if args.target_spacing is not None:
+        if args.resample == 'none':
+            parser.error('--target_spacing requires --resample xy or --resample xyz')
+        dims = 3 if args.resample == 'xyz' else 2
+        if len(args.target_spacing) != dims:
+            parser.error(f'--resample {args.resample} requires {dims} values for --target_spacing')
+        if not all(np.isfinite(value) and value > 0 for value in args.target_spacing):
+            parser.error('--target_spacing values must be finite and positive')
     random.seed(args.seed)
 
     print(args)
