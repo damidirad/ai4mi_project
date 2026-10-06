@@ -314,22 +314,13 @@ Preprocessing accepts `--resample none|xy|xyz` (default: `none`).
 Use `xy` to preserve Z or `xyz` to resample all axes. See
 [resampling CLI](docs/resampling_cli.md) for target spacing and migration examples.
 
-### Optional tile preprocessing
+### Optional tile preprocessing and training
 
 `slice_segthor.py --tiling` extracts fixed tiles instead of resizing full slices.
-It supports every resampling mode and writes geometry and padding masks.
-See [tile extraction](docs/tiling.md). Use `main.py --tiling --check-data` to inspect 2D/2.5D batches; see
-[the tileloader](docs/tiled_dataset.md). Tiled training awaits the loss and
-reconstruction stages.
+It supports all resampling modes and writes geometry and padding masks.
+`main.py --tiling --loss ce` trains with overlap-corrected loss and original-grid
+volume validation. Use `--slices 3` for the existing 2.5D model.
 
-For a tiled CE/gradient diagnostic, add `--check-loss --loss ce` to
-`--tiling --check-data`. See [tiled loss weighting](docs/tiled_losses.md).
-Full tiled training still awaits reconstruction and volume metric integration.
-
-Tile probabilities can now be combined on the working grid with
-`predict_working_volume`; see [tiled reconstruction](docs/tiled_reconstruction.md).
-Original-grid restoration and full training integration remain the next stage.
-
-For original-grid checkpoint evaluation, use `--tiling --evaluate-checkpoint
-PATH_TO_STATE_DICT.pt`; see [original-grid evaluation](docs/original_grid_evaluation.md).
-This writes validation NIfTI volumes and metrics without training.
+See [the complete tiled workflow](docs/tiled_training.md) for preprocessing,
+diagnostics, training, checkpoint evaluation, supported options and tests.
+Without `--tiling`, the historical full-slice route remains active.

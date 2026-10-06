@@ -1,3 +1,7 @@
+> This document records its implementation stage. The full route is now
+> connected in [stage 8](tiled_training.md); historical statements below about
+> training being blocked applied before that integration.
+
 # Stage 5: padding and overlap in tiled cross-entropy
 
 The loader now supplies `pixel_weights` with shape `[B,X,Y]`: inverse coverage

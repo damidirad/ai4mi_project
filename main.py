@@ -90,7 +90,7 @@ def gt_transform(K, img):
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     if getattr(args, 'tiling', False):
-        raise ValueError('Tiled training awaits reconstruction and metric integration; use --tiling --check-data')
+        raise ValueError('Use runTraining for the dedicated tiled training route')
     # Networks and scheduler
     use_gpu = args.gpu
 
@@ -176,6 +176,9 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 def runTraining(args):
+    if getattr(args, 'tiling', False):
+        from train_tiled import run_tiled_training
+        return run_tiled_training(args)
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
 

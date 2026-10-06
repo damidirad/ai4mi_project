@@ -1,3 +1,7 @@
+> This document records its implementation stage. The full route is now
+> connected in [stage 8](tiled_training.md); historical statements below about
+> training being blocked applied before that integration.
+
 # Stage 3: optional tile extraction
 
 Tiling cuts fixed rectangles out of each working X/Y slice. It does not resize

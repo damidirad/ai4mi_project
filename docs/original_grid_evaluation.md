@@ -1,3 +1,7 @@
+> This document records its implementation stage. The full route is now
+> connected in [stage 8](tiled_training.md); historical statements below about
+> training being blocked applied before that integration.
+
 # Stage 7: original-grid restoration and evaluation
 
 `evaluate_tiled.py` connects working-grid reconstruction to the original scan.

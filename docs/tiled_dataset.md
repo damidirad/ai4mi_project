@@ -1,3 +1,7 @@
+> This document records its implementation stage. The full route is now
+> connected in [stage 8](tiled_training.md); historical statements below about
+> training being blocked applied before that integration.
+
 # Stage 4: loading tiles in 2D and 2.5D
 
 `dataset.build_dataset(..., tiling=True)` selects `TiledDataset` explicitly.
