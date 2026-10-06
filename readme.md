@@ -325,3 +325,7 @@ reconstruction stages.
 For a tiled CE/gradient diagnostic, add `--check-loss --loss ce` to
 `--tiling --check-data`. See [tiled loss weighting](docs/tiled_losses.md).
 Full tiled training still awaits reconstruction and volume metric integration.
+
+Tile probabilities can now be combined on the working grid with
+`predict_working_volume`; see [tiled reconstruction](docs/tiled_reconstruction.md).
+Original-grid restoration and full training integration remain the next stage.

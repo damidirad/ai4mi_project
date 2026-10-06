@@ -68,8 +68,8 @@ or output files are created by this command. The value is a diagnostic, not a
 model performance score. Without `--check-loss`, batch checking retains its
 previous scope.
 
-Full tiled training still stops before model setup: reconstruction and volume
-metric integration remain stages 6–7. This commit introduces the reusable loss
+Full tiled training still stops before model setup: working-grid reconstruction is available in [stage 6](tiled_reconstruction.md),
+but original-grid restoration and volume metric integration remain stage 7. This commit introduces the reusable loss
 and dataset weights, not a partially working full training run.
 
 ## Verification
