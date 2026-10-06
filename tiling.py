@@ -51,6 +51,22 @@ class TileLayout:
         valid[:nx, :ny] = True
         return tile, valid
 
+    def coverage(self):
+        """Number of tiles covering each real working pixel."""
+        result = np.zeros(self.shape, dtype=np.int32)
+        for x, y in self.starts:
+            result[x:x+self.size[0], y:y+self.size[1]] += 1
+        return result
+
+    def pixel_weights(self, index, coverage=None):
+        """Inverse overlap count inside the scan, zero on padding."""
+        if coverage is None:
+            coverage = self.coverage()
+        tile, valid = self.extract(coverage, index)
+        weights = np.zeros(self.size, dtype=np.float32)
+        np.divide(1., tile, out=weights, where=valid)
+        return weights
+
     def to_dict(self):
         return {'size': list(self.size), 'stride': list(self.stride),
                 'starts_xy': [list(p) for p in self.starts],

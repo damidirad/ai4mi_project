@@ -103,7 +103,7 @@ class TiledDatasetTests(unittest.TestCase):
             self.assertIn('train: 24 samples', output.getvalue())
             self.assertIn('val: 24 samples', output.getvalue())
             self.assertFalse(args.dest.exists())
-            with self.assertRaisesRegex(ValueError, 'masked losses'):
+            with self.assertRaisesRegex(ValueError, 'reconstruction'):
                 setup(args)
 
     def test_mismatched_split_configuration_rejected(self):

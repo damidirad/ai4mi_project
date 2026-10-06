@@ -321,3 +321,7 @@ It supports every resampling mode and writes geometry and padding masks.
 See [tile extraction](docs/tiling.md). Use `main.py --tiling --check-data` to inspect 2D/2.5D batches; see
 [the tileloader](docs/tiled_dataset.md). Tiled training awaits the loss and
 reconstruction stages.
+
+For a tiled CE/gradient diagnostic, add `--check-loss --loss ce` to
+`--tiling --check-data`. See [tiled loss weighting](docs/tiled_losses.md).
+Full tiled training still awaits reconstruction and volume metric integration.

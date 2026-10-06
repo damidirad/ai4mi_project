@@ -8,6 +8,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from preprocessing_metadata import load_metadata
+from tiling import TileLayout
 
 
 class TiledDataset(Dataset):
@@ -24,6 +25,8 @@ class TiledDataset(Dataset):
         self.slices = slices
         self.img_transform, self.gt_transform = img_transform, gt_transform
         self.records = {}
+        self.layouts = {}
+        self.coverage = {}
         self.samples = []
         paths = sorted((self.root / 'metadata').glob('*.json'))
         if not paths:
@@ -36,6 +39,9 @@ class TiledDataset(Dataset):
             if pid != path.stem or Path(pid).name != pid or pid in ('.', '..') or pid in self.records:
                 raise ValueError('Invalid or duplicate patient identifier')
             self.records[pid] = record
+            layout = TileLayout(record['working']['shape'][:2], record['tiling']['size'], record['tiling']['stride'])
+            self.layouts[pid] = layout
+            self.coverage[pid] = layout.coverage()
             depth = record['working']['shape'][2]
             count = len(record['tiling']['starts_xy'])
             expected = {f'z{z:04d}_t{t:04d}.png' for z in range(depth) for t in range(count)}
@@ -100,7 +106,8 @@ class TiledDataset(Dataset):
         sample = {'images': image, 'stems': f'{pid}_z{z:04d}_t{tile:04d}',
                   'patient_id': pid, 'z': z, 'tile_index': tile,
                   'tile_start': torch.tensor([x, y]),
-                  'valid_mask': torch.from_numpy(mask == 255)}
+                  'valid_mask': torch.from_numpy(mask == 255),
+                  'pixel_weights': torch.from_numpy(self.layouts[pid].pixel_weights(tile, self.coverage[pid]))}
         if not self.test_mode:
             label = self._read(folder / 'gt' / f'z{z:04d}_t{tile:04d}.png')
             if not np.isin(label, [0, 63, 126, 189, 252]).all():
@@ -110,3 +117,21 @@ class TiledDataset(Dataset):
                 raise ValueError('Label transform must preserve tile dimensions and five classes')
             sample['gts'] = target
         return sample
+
+    def class_counts(self):
+        """Count selected samples with inverse-overlap weights, excluding padding.
+
+        Full datasets count every working voxel once. Debug subsets describe
+        only their selected weighted samples. No CT or neighbouring images load.
+        """
+        if self.test_mode:
+            raise ValueError('Class counts require labelled data')
+        counts = np.zeros(5, dtype=np.float64)
+        for pid, z, tile in self.samples:
+            path = self.root / 'tiles' / pid / 'gt' / f'z{z:04d}_t{tile:04d}.png'
+            encoded = self._read(path)
+            if not np.isin(encoded, [0, 63, 126, 189, 252]).all():
+                raise ValueError('Invalid tile label encoding')
+            weights = self.layouts[pid].pixel_weights(tile, self.coverage[pid])
+            counts += np.bincount((encoded // 63).ravel(), weights=weights.ravel(), minlength=5)
+        return torch.from_numpy(counts)

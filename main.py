@@ -90,7 +90,7 @@ def gt_transform(K, img):
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     if getattr(args, 'tiling', False):
-        raise ValueError('Tiled training awaits masked losses and reconstruction; use --tiling --check-data')
+        raise ValueError('Tiled training awaits reconstruction and metric integration; use --tiling --check-data')
     # Networks and scheduler
     use_gpu = args.gpu
 
@@ -512,6 +512,18 @@ def check_data(args):
     K = datasets_params[args.dataset]['K']
     if args.tiling and K != 5:
         raise ValueError('Tiled data currently uses the five-class SegTHOR encoding')
+    check_loss = getattr(args, 'check_loss', False)
+    if check_loss and not args.tiling:
+        raise ValueError('--check-loss requires --tiling')
+    if check_loss:
+        from tiled_losses import validate_tiled_loss, make_tiled_loss, inverse_frequency_weights
+        validate_tiled_loss(args.loss)
+        if args.mode == 'full':
+            idk = list(range(K))
+        elif args.mode == 'partial' and args.dataset == 'SEGTHOR':
+            idk = [0, 1, 3, 4]
+        else:
+            raise ValueError('Unsupported tiled supervision mode')
     sizes = []
     signatures = []
     for split in ('train', 'val'):
@@ -527,6 +539,21 @@ def check_data(args):
             signatures.append(dataset.preprocessing_signature)
         print(f"{split}: {len(dataset)} samples; images={tuple(batch['images'].shape)}, "
               f"labels={tuple(batch['gts'].shape)}")
+        if check_loss:
+            counts = dataset.class_counts()
+            if split == 'train':
+                class_weights = inverse_frequency_weights(counts)
+            criterion = make_tiled_loss(dataset, args.loss, idk, class_weights, counts=counts)
+            # Diagnostic logits only: no model, optimizer or training is run.
+            logits = torch.zeros_like(batch['gts'], dtype=torch.float32, requires_grad=True)
+            loss = criterion(logits, batch['gts'], batch['pixel_weights'])
+            loss.backward()
+            if not torch.isfinite(loss) or not torch.isfinite(logits.grad).all():
+                raise ValueError('Nonfinite tiled loss or gradients')
+            padded = (~batch['valid_mask']).unsqueeze(1).expand_as(logits)
+            if torch.any(logits.grad[padded] != 0):
+                raise ValueError('Padding contributed to tiled gradients')
+            print(f'{split}: tiled CE={loss.item():.6f}; padding gradients zero')
     if args.tiling and signatures[0] != signatures[1]:
         raise ValueError('Training and validation preprocessing configurations differ')
     if sizes[0] != sizes[1]:
@@ -561,12 +588,16 @@ def main():
     parser.add_argument('--tiling', action='store_true', help='Load the tiled dataset layout')
     parser.add_argument('--check-data', action='store_true',
                         help='Check train/val batches without training or writing results')
+    parser.add_argument('--check-loss', action='store_true',
+                        help='With --tiling --check-data: check CE and gradients on diagnostic logits')
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.check_loss and not (args.tiling and args.check_data):
+        parser.error('--check-loss requires --tiling --check-data')
 
     random.seed(args.seed)
     np.random.seed(args.seed)

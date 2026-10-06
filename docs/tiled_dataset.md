@@ -13,7 +13,7 @@ check every PNG's pixels in advance. Test datasets do not require labels.
 
 A sample contains `images`, central-slice `gts` (except for test), a unique
 `stems` string, `patient_id`, `z`, `tile_index`, `tile_start`, and boolean
-`valid_mask`. Batched shapes are images `[B,S,X,Y]`, labels `[B,5,X,Y]`, masks
+`valid_mask`, and (since stage 5) inverse-overlap `pixel_weights`. Batched shapes are images `[B,S,X,Y]`, labels `[B,5,X,Y]`, masks
 `[B,X,Y]`. This uses the current SegTHOR five-class encoding and transforms.
 
 For 2.5D, an odd number of slices is required. Each neighbour has the same
@@ -36,9 +36,9 @@ results directory. The existing parser still requires `--dest`. Use `--slices
 1` for 2D. No architecture change is introduced.
 
 Tiled training is deliberately not enabled in this stage: `--tiling` without
-`--check-data` fails before model/optimizer setup. The existing loss ignores
-padding/overlap and the existing metrics assume full slices. Those need the
-planned stages 5–7 before training is correct. The dataset already provides
+`--check-data` fails before model/optimizer setup. The original losses and metrics assume full slices. Stage 5 now supplies
+[masked, overlap-corrected CE](tiled_losses.md); reconstruction and metric
+integration in stages 6–7 are still required. The dataset already provides
 masks and coordinates for those stages. No new sampling/weighting strategy is
 introduced here. Ordinary full-slice training retains its existing route.
 

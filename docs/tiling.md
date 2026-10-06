@@ -62,8 +62,8 @@ The existing CLI also requires a new destination directory for each run.
 
 ## Scope of this commit
 
-This step prepares tiles, masks and positions only. Loading tiles into batches is now available in [stage 4](tiled_dataset.md); excluding padding and correcting overlap in the loss
-comes in stage 5. Reconstruction is also a later stage. These tiles are stored
+This step prepares tiles, masks and positions only. Loading tiles into batches is now available in [stage 4](tiled_dataset.md); excluding padding and correcting overlap in CE is now available in
+[stage 5](tiled_losses.md). Reconstruction is also a later stage. These tiles are stored
 separately from the legacy `train/img` layout. The explicit tileloader supports
 batch checks; tiled training awaits the loss and reconstruction stages. No model or loss has been changed.
 
