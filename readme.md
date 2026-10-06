@@ -307,3 +307,9 @@ It may happen that Pytorch, when installed through pip, was compiled for Numpy 1
 <a id="viewer-on-windows"></a>
 ### Viewer on Windows
 Windows has different paths names (`\` in stead of `/`), so the default regex in the viewer needs to be changed to `--id_regex=".*\\\\(.*).png"`.
+
+### Optional voxel resampling
+
+Preprocessing accepts `--resample none|xy|xyz` (default: `none`).
+Use `xy` to preserve Z or `xyz` to resample all axes. See
+[resampling CLI](docs/resampling_cli.md) for target spacing and migration examples.

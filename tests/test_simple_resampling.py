@@ -167,7 +167,7 @@ class BaselineTests(unittest.TestCase):
                 retains=1,
                 fold=0,
                 process=1,
-                resample=False,
+                resample="none",
                 target_spacing=None,
             )
 
@@ -278,7 +278,7 @@ class TargetSpacingTests(unittest.TestCase):
                 args = Namespace(
                     source_dir=str(source), dest_dir=str(destination),
                     shape=[256, 256], retains=1, fold=0, process=1,
-                    resample=True, target_spacing=override,
+                    resample="xy", target_spacing=override,
                 )
                 loaded = []
                 processed = []
@@ -335,7 +335,7 @@ class TargetSpacingTests(unittest.TestCase):
                 args = Namespace(
                     source_dir=directory,
                     dest_dir=str(Path(directory) / "output"),
-                    retains=1, fold=0, resample=True, target_spacing=override,
+                    retains=1, fold=0, resample="xy", target_spacing=override,
                 )
                 with (
                     patch.object(pipeline, "get_splits", return_value=(
@@ -544,9 +544,11 @@ class PipelineIntegrationTests(unittest.TestCase):
 
     def test_cli_defaults_and_resampling_options(self):
         for options, enabled, target in (
-            ([], False, None),
-            (["--resample"], True, None),
-            (["--resample", "--target_spacing", "0.8", "1.2"], True, [0.8, 1.2]),
+            ([], "none", None),
+            (["--resample", "none"], "none", None),
+            (["--resample", "xy"], "xy", None),
+            (["--resample", "xyz"], "xyz", None),
+            (["--resample", "xy", "--target_spacing", "0.8", "1.2"], "xy", [0.8, 1.2]),
         ):
             with self.subTest(options=options):
                 argv = ["slice_segthor.py", "--source_dir", "source", "--dest_dir", "output"]
@@ -563,7 +565,7 @@ class PipelineIntegrationTests(unittest.TestCase):
     def test_cli_rejects_old_three_value_target(self):
         argv = [
             "slice_segthor.py", "--source_dir", "source", "--dest_dir", "output",
-            "--resample", "--target_spacing", "1", "1", "2.5",
+            "--resample", "xy", "--target_spacing", "1", "1", "2.5",
         ]
         with patch.object(sys, "argv", argv), patch.object(sys, "stderr", io.StringIO()):
             with self.assertRaises(SystemExit) as error:

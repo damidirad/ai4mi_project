@@ -210,8 +210,8 @@ def main(args: argparse.Namespace):
     print(f"HU window: {window}")
 
     target_spacing = None
-    if args.resample or args.spatial_normalize:
-        dims = 3 if args.spatial_normalize else 2
+    if args.resample != "none":
+        dims = 3 if args.resample == "xyz" else 2
         target_spacing = tuple(args.target_spacing) if args.target_spacing else median_spacing(training_ids, src_path, dims)
         assert len(target_spacing) == dims, target_spacing
     print(f"Target spacing: {target_spacing}")
@@ -255,17 +255,24 @@ def get_args() -> argparse.Namespace:
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--hu_clip', action='store_true', help="Clip HU to training-set organ percentiles")
-    parser.add_argument('--resample', action='store_true', help="Resample X/Y to a common spacing")
-    parser.add_argument('--spatial_normalize', action='store_true', help="Resample X/Y/Z to a common spacing")
+    parser.add_argument('--resample', choices=('none', 'xy', 'xyz'), default='none',
+                        help="Voxel resampling: none (default), xy (preserve Z), or xyz")
     parser.add_argument('--target_spacing', type=float, nargs="+", default=None,
-                        help="Defaults to the training-set median")
+                        help="Spacing in mm: DX DY for xy, DX DY DZ for xyz; defaults to training-set medians")
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
-    assert not (args.resample and args.spatial_normalize)
+    if args.target_spacing is not None:
+        if args.resample == 'none':
+            parser.error('--target_spacing requires --resample xy or --resample xyz')
+        dims = 3 if args.resample == 'xyz' else 2
+        if len(args.target_spacing) != dims:
+            parser.error(f'--resample {args.resample} requires {dims} values for --target_spacing')
+        if not all(np.isfinite(value) and value > 0 for value in args.target_spacing):
+            parser.error('--target_spacing values must be finite and positive')
     random.seed(args.seed)
 
     print(args)
