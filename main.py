@@ -746,7 +746,7 @@ def main():
     parser.add_argument('--seed', default=0, type=int,
                         help="Random seed for reproducible model initialization and shuffling.")
     parser.add_argument('--slices', default=1, type=int,
-                        help="Neighbouring slices per sample; >1 uses ENet_2_5d.")
+                        help="Positive odd number of slices per sample: 1 uses 2D; >1 uses ENet_2_5d.")
 
     parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw'],
                         help="adam: original setup; adamw: Adam with decoupled weight decay (1e-2).")
@@ -766,6 +766,8 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.slices <= 0 or args.slices % 2 == 0:
+        parser.error('--slices must be a positive odd integer (1 for 2D; 3, 5, ... for 2.5D)')
     if args.evaluate_checkpoint and (not args.tiling or args.check_data or args.check_loss):
         parser.error('--evaluate-checkpoint requires --tiling and cannot combine with check modes')
     if args.check_loss and not (args.tiling and args.check_data):
