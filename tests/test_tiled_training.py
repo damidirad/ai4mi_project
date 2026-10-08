@@ -14,7 +14,6 @@ import torch
 
 import main
 import slice_segthor as preprocessing
-from train_tiled import run_tiled_training
 
 
 class TiledTrainingTests(unittest.TestCase):
@@ -72,7 +71,7 @@ class TiledTrainingTests(unittest.TestCase):
                     report = json.loads((args.dest/'best_predictions/metrics.json').read_text())
                     self.assertEqual(report['grid'], 'original_CT')
                     with self.assertRaises(FileExistsError):
-                        run_tiled_training(args)
+                        main.runTraining(args)
         finally:
             torch.set_num_threads(previous_threads)
 
