@@ -17,7 +17,8 @@ Class counts read label PNGs, so this is an additional dataset-wide I/O pass.
 
 ## Loss and sampling contract
 
-`TiledCrossEntropy` consumes **logits**, one-hot targets and pixel weights.
+`TiledCrossEntropy` and its helper functions live in `losses.py`, alongside
+the full-slice losses. It consumes **logits**, one-hot targets and pixel weights.
 It uses stable log-softmax and supports both selected supervised classes and
 optional nonnegative class weights. Existing losses in `losses.py` are unchanged.
 

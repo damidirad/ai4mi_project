@@ -10,7 +10,7 @@ import torch
 from torch.nn import functional as F
 
 from tiling import TileLayout
-from tiled_losses import TiledCrossEntropy, inverse_frequency_weights, make_tiled_loss
+from losses import TiledCrossEntropy, inverse_frequency_weights, make_tiled_loss
 import test_tiled_dataset as fixtures
 from main import check_data
 

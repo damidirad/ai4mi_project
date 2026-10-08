@@ -189,7 +189,7 @@ def _save_training_checkpoint(path, value):
 def run_tiled_training(args):
     """Train on tiles and validate reconstructed volumes on the original CT grid."""
     from evaluate_tiled import evaluate_model, reference_image
-    from tiled_losses import validate_tiled_loss, inverse_frequency_weights, make_tiled_loss
+    from losses import validate_tiled_loss, inverse_frequency_weights, make_tiled_loss
 
     validate_tiled_loss(args.loss)
     if args.epochs <= 0 or args.workers < 0:
@@ -656,7 +656,7 @@ def check_data(args):
     if check_loss and not args.tiling:
         raise ValueError('--check-loss requires --tiling')
     if check_loss:
-        from tiled_losses import validate_tiled_loss, make_tiled_loss, inverse_frequency_weights
+        from losses import validate_tiled_loss, make_tiled_loss, inverse_frequency_weights
         validate_tiled_loss(args.loss)
         if args.mode == 'full':
             idk = list(range(K))
