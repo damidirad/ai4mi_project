@@ -4,6 +4,7 @@
 
 # Stage 4: loading tiles in 2D and 2.5D
 
+`TiledDataset` and `SliceDataset` both live in `dataset.py`.
 `dataset.build_dataset(..., tiling=True)` selects `TiledDataset` explicitly.
 Without tiling it selects the existing `SliceDataset`. A layout mismatch gives
 an error rather than silently loading zero samples.
