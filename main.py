@@ -290,11 +290,11 @@ def runTraining(args):
     scheduler = None
     if args.scheduler == 'cosine':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    if args.debug:
-        print(f">>> DEBUG train dataset size: {len(train_loader.dataset)}")
-        print(f">>> DEBUG val dataset size: {len(val_loader.dataset)}")
-        print(f">>> DEBUG train batches: {len(train_loader)}")
-        print(f">>> DEBUG val batches: {len(val_loader)}")
+
+    print(f">>> Train dataset size: {len(train_loader.dataset)}")
+    print(f">>> Val dataset size: {len(val_loader.dataset)}")
+    print(f">>> Train batches: {len(train_loader)}")
+    print(f">>> Val batches: {len(val_loader)}")
 
     if not tiling:
         with open(args.data_root / args.dataset / "spacing.pkl", "rb") as f:
