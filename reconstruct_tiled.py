@@ -1,4 +1,5 @@
-"""Stage 6: blend tile probabilities on the unpadded working grid.
+""" 
+Blend tile probabilities on the unpadded working grid.
 
 No inverse resampling, original-grid metrics or training changes are performed.
 Arrays returned here use XYZ order; probability tiles use KXY order.

@@ -237,7 +237,8 @@ class TiledDataset(Dataset):
         return sample
 
     def class_counts(self):
-        """Count selected samples with inverse-overlap weights, excluding padding.
+        """
+        Count selected samples with inverse-overlap weights, excluding padding.
 
         Full datasets count every working voxel once. Debug subsets describe
         only their selected weighted samples. No CT or neighbouring images load.

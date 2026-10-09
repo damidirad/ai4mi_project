@@ -1,4 +1,5 @@
-"""Geometry building blocks for tiling and optional preprocessing metadata.
+"""
+Geometry building blocks for tiling and optional preprocessing metadata.
 
 Array axes are voxel X/Y/Z, not necessarily anatomical axes. World coordinates
 are NIfTI RAS in millimetres. Full affines preserve rotations, flips and shear.
@@ -79,7 +80,8 @@ def voxel_mapping(source: Grid, destination: Grid):
 
 
 def grid_after_resampling(source: Grid, output_shape):
-    """Track the actual output of the existing grid_mode=False resampler.
+    """
+    Track the actual output of the existing grid_mode=False resampler.
 
     SciPy rounds input_size * requested_zoom to obtain the output size, then
     samples using (input_size - 1) / (output_size - 1). Therefore requested

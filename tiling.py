@@ -78,7 +78,8 @@ class TileLayout:
 
 
 def write_patient_tiles(destination, images, labels, layout):
-    """Store image/label tiles and one valid mask per XY position (shared by Z).
+    """
+    Store image/label tiles and one valid mask per XY position (shared by Z).
 
     images are normalized uint8; labels are integer classes 0..4 or None for test scans.
     Padding is zero in normalized intensity space, not an assumed HU value.
