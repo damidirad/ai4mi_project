@@ -187,9 +187,9 @@ def _save_training_checkpoint(path, value):
     temporary.replace(path)
 
 
-def run_tiled_training(args):
-    """Train on tiles and validate reconstructed volumes on the original CT grid."""
-    from evaluate_tiled import evaluate_model, reference_image
+def _setup_tiled_training(args):
+    """Validate tiled inputs and prepare components for the shared training loop."""
+    from evaluate_tiled import reference_image
     from losses import validate_tiled_loss, inverse_frequency_weights, make_tiled_loss
 
     validate_tiled_loss(args.loss)
@@ -250,10 +250,7 @@ def run_tiled_training(args):
     optimizer_class = {'adam': torch.optim.Adam, 'adamw': torch.optim.AdamW}[args.optimizer]
     optimizer = optimizer_class(model.parameters(), lr=.0005, betas=(.9, .999),
                                 weight_decay=.01 if args.optimizer == 'adamw' else 0)
-    scheduler = None
-    if args.scheduler == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    elif args.scheduler != 'none':
+    if args.scheduler not in ('none', 'cosine'):
         raise ValueError('Unknown scheduler')
     destination.mkdir(parents=True)
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
@@ -264,65 +261,22 @@ def run_tiled_training(args):
                    'preprocessing_signature': train.preprocessing_signature,
                    'train_metadata': train.records, 'val_metadata': validation.records})
     _write_training_json(destination / 'run.json', config)
-    history = []
-    best, best_epoch = -1., None
-    for epoch in range(args.epochs):
-        model.train()
-        total, samples = 0., 0
-        lr = optimizer.param_groups[0]['lr']
-        for batch in loader:
-            optimizer.zero_grad()
-            logits = model(batch['images'].to(device))
-            loss = criterion(logits, batch['gts'].to(device), batch['pixel_weights'].to(device))
-            if not torch.isfinite(loss):
-                raise ValueError('Nonfinite tiled training loss')
-            loss.backward()
-            if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in model.parameters()):
-                raise ValueError('Nonfinite tiled gradients')
-            optimizer.step()
-            size = logits.shape[0]
-            total += loss.item() * size
-            samples += size
-        model.eval()
-        val_total, val_samples = 0., 0
-        with torch.inference_mode():
-            for batch in val_loader:
-                logits = model(batch['images'].to(device))
-                loss = val_criterion(logits, batch['gts'].to(device), batch['pixel_weights'].to(device))
-                if not torch.isfinite(loss):
-                    raise ValueError('Nonfinite tiled validation loss')
-                val_total += loss.item() * logits.shape[0]
-                val_samples += logits.shape[0]
-        report = evaluate_model(model, validation, destination / f'epoch_{epoch:03d}', params['B'], device)
-        score = report['mean_foreground_dice']
-        history.append({'epoch': epoch, 'lr': lr, 'train_ce': total/samples,
-                        'val_ce': val_total/val_samples, 'mean_foreground_dice': score})
-        if score > best:
-            best, best_epoch = score, epoch
-            _save_training_checkpoint(destination / 'bestweights.pt', model.state_dict())
-        if scheduler is not None:
-            scheduler.step()
-        _save_training_checkpoint(destination / 'last.pt', {'state_dict': model.state_dict(),
-              'optimizer': optimizer.state_dict(), 'scheduler': None if scheduler is None else scheduler.state_dict(),
-              'epoch': epoch, 'slices': args.slices, 'preprocessing_signature': train.preprocessing_signature})
-        _write_training_json(destination / 'history.json', history)
-        print(f'Epoch {epoch+1}/{args.epochs}: CE={total/samples:.6f}, original-grid Dice={score:.6f}', flush=True)
-    model.load_state_dict(torch.load(destination / 'bestweights.pt', map_location=device, weights_only=True))
-    final = evaluate_model(model, validation, destination / 'best_predictions', params['B'], device)
-    _write_training_json(destination / 'summary.json', {'complete': True, 'best_epoch': best_epoch,
-          'best_validation_dice': best, 'reloaded_best_dice': final['mean_foreground_dice'],
-          'epochs': args.epochs, 'checkpoint': 'bestweights.pt'})
-    return history
+    return model, optimizer, device, loader, val_loader, 5, weights, criterion, val_criterion
 
 
 def runTraining(args):
-    if getattr(args, 'tiling', False):
-        return run_tiled_training(args)
-    print(f">>> Setting up to train on {args.dataset} with {args.mode}")
-    net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
+    tiling = getattr(args, 'tiling', False)
+    if tiling:
+        from evaluate_tiled import evaluate_model
+        net, optimizer, device, train_loader, val_loader, K, weights, loss_fn, val_loss_fn = _setup_tiled_training(args)
+        destination = Path(args.dest)
+        history, best_epoch = [], None
+    else:
+        print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+        net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
 
     original_records = None
-    if getattr(args, 'original_grid_validation', False):
+    if not tiling and getattr(args, 'original_grid_validation', False):
         from evaluate_tiled import load_full_metadata, evaluate_full_predictions, reference_image
         if args.debug or K != 5:
             raise ValueError('Original-grid validation requires complete five-class patient volumes')
@@ -342,36 +296,40 @@ def runTraining(args):
         print(f">>> DEBUG train batches: {len(train_loader)}")
         print(f">>> DEBUG val batches: {len(val_loader)}")
 
-    with open(args.data_root / args.dataset / "spacing.pkl", "rb") as f:
-        spacing_dict = pickle.load(f)
+    if not tiling:
+        with open(args.data_root / args.dataset / "spacing.pkl", "rb") as f:
+            spacing_dict = pickle.load(f)
 
-    if args.mode == "full":
-        idk = list(range(K))  # Supervise both background and foreground
-    elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
+        if args.mode == "full":
+            idk = list(range(K))  # Supervise both background and foreground
+        elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
+            idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
+        else:
+            raise ValueError(args.mode, args.dataset)
+
+        match args.loss:
+            case 'ce':
+                loss_fn = CrossEntropy(idk=idk, weights=weights)
+            case 'dice':
+                loss_fn = DiceLoss(idk=idk)
+            case 'ce_dice':
+                loss_fn = CEDiceLoss(idk=idk, weights=weights)
+            case 'boundary':
+                loss_fn = BoundaryLoss(idk=idk)
+            case 'ce_dice_boundary':
+                loss_fn = CEDiceBoundaryLoss(idk=idk, weights=weights)
+
+        # Notice one has the length of the _loader_, and the other one of the _dataset_
+        log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
+        log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
+        log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
+        log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
+        log_h95_val: Tensor = torch.zeros((args.epochs,))
+        log_assd_val: Tensor = torch.zeros((args.epochs,))
+        log_lr: Tensor = torch.zeros((args.epochs,))  # LR used during each epoch
+
     else:
-        raise ValueError(args.mode, args.dataset)
-
-    match args.loss:
-        case 'ce':
-            loss_fn = CrossEntropy(idk=idk, weights=weights)
-        case 'dice':
-            loss_fn = DiceLoss(idk=idk)
-        case 'ce_dice':
-            loss_fn = CEDiceLoss(idk=idk, weights=weights)
-        case 'boundary':
-            loss_fn = BoundaryLoss(idk=idk)
-        case 'ce_dice_boundary':
-            loss_fn = CEDiceBoundaryLoss(idk=idk, weights=weights)
-
-    # Notice one has the length of the _loader_, and the other one of the _dataset_
-    log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
-    log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
-    log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
-    log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
-    log_h95_val: Tensor = torch.zeros((args.epochs,))
-    log_assd_val: Tensor = torch.zeros((args.epochs,))
-    log_lr: Tensor = torch.zeros((args.epochs,))  # LR used during each epoch
+        log_lr = torch.zeros(args.epochs)
 
     best_dice: float = -1
 
@@ -380,6 +338,7 @@ def runTraining(args):
         print(f">> Learning rate for epoch {e}: {log_lr[e]:.2e}")
 
 
+        tile_losses = {}
         for m in ['train', 'val']:
             match m:
                 case 'train':
@@ -388,16 +347,18 @@ def runTraining(args):
                     cm = Dcm
                     desc = f">> Training   ({e: 4d})"
                     loader = train_loader
-                    log_loss = log_loss_tra
-                    log_dice = log_dice_tra
+                    if not tiling:
+                        log_loss = log_loss_tra
+                        log_dice = log_dice_tra
                 case 'val':
                     net.eval()
                     opt = None
-                    cm = torch.no_grad
+                    cm = torch.inference_mode if tiling else torch.no_grad
                     desc = f">> Validation ({e: 4d})"
                     loader = val_loader
-                    log_loss = log_loss_val
-                    log_dice = log_dice_val
+                    if not tiling:
+                        log_loss = log_loss_val
+                        log_dice = log_dice_val
 
                     # Collect validation slices for 3D Dice
                     patient_preds = {}
@@ -407,8 +368,9 @@ def runTraining(args):
                     hd95_scores = []
                     assd_scores = []
 
+            tile_total, tile_samples = 0., 0
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
-                if m == 'val':
+                if not tiling and m == 'val':
                     val_dest = args.dest / f"iter{e:03d}" / m
                     if val_dest.exists():
                         rmtree(val_dest)
@@ -427,43 +389,58 @@ def runTraining(args):
                     B, _, W, H = img.shape
 
                     pred_logits = net(img)
-                    pred_probs = F.softmax(1 * pred_logits, dim=1)  # 1 is the temperature parameter
+                    if tiling:
+                        criterion = loss_fn if m == 'train' else val_loss_fn
+                        loss = criterion(pred_logits, gt, data['pixel_weights'].to(device))
+                        if not torch.isfinite(loss):
+                            raise ValueError(f'Nonfinite tiled {m} loss')
+                    else:
+                        pred_probs = F.softmax(1 * pred_logits, dim=1)  # 1 is the temperature parameter
 
-                    # Metrics computation, not used for training
-                    pred_seg = probs2one_hot(pred_probs)
+                        # Metrics computation, not used for training
+                        pred_seg = probs2one_hot(pred_probs)
 
-                    if args.debug and m == 'val' and i == 0:
-                        print(
-                            f">>> DEBUG epoch {e}: "
-                            f"pred pixel counts = "
-                            f"{pred_seg.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
-                        )
-                        print(
-                            f">>> DEBUG epoch {e}: "
-                            f"gt pixel counts = "
-                            f"{gt.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
-                        )
-                    if m == 'val':
-                        for b, stem in enumerate(data['stems']):
-                            patient_id, slice_id = str(stem).rsplit("_", 1)
-                            slice_id = int(slice_id)
+                        if args.debug and m == 'val' and i == 0:
+                            print(
+                                f">>> DEBUG epoch {e}: "
+                                f"pred pixel counts = "
+                                f"{pred_seg.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
+                            )
+                            print(
+                                f">>> DEBUG epoch {e}: "
+                                f"gt pixel counts = "
+                                f"{gt.sum(dim=(0, 2, 3)).detach().cpu().tolist()}"
+                            )
+                        if m == 'val':
+                            for b, stem in enumerate(data['stems']):
+                                patient_id, slice_id = str(stem).rsplit("_", 1)
+                                slice_id = int(slice_id)
 
-                            if patient_id not in patient_preds:
-                                patient_preds[patient_id] = {}
-                                patient_gts[patient_id] = {}
+                                if patient_id not in patient_preds:
+                                    patient_preds[patient_id] = {}
+                                    patient_gts[patient_id] = {}
 
-                            patient_preds[patient_id][slice_id] = pred_seg[b].cpu()
-                            patient_gts[patient_id][slice_id] = gt[b].cpu()
+                                patient_preds[patient_id][slice_id] = pred_seg[b].cpu()
+                                patient_gts[patient_id][slice_id] = gt[b].cpu()
 
 
-                    log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
+                        log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
 
-                    loss = loss_fn(pred_probs, gt)
-                    log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
+                        loss = loss_fn(pred_probs, gt)
+                        log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
 
                     if opt:  # Only for training
                         loss.backward()
+                        if tiling and any(p.grad is not None and not torch.isfinite(p.grad).all()
+                                          for p in net.parameters()):
+                            raise ValueError('Nonfinite tiled gradients')
                         opt.step()
+
+                    if tiling:
+                        tile_total += loss.item() * B
+                        tile_samples += B
+                        tq_iter.set_postfix({'Loss': tile_total / tile_samples})
+                        continue
 
                     if m == 'val':
                         with warnings.catch_warnings():
@@ -482,6 +459,30 @@ def runTraining(args):
                         postfix_dict |= {f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
                                          for k in range(1, K)}
                     tq_iter.set_postfix(postfix_dict)
+
+            if tiling:
+                tile_losses[m] = tile_total / tile_samples
+
+        if tiling:
+            report = evaluate_model(net, val_loader.dataset, destination / f'epoch_{e:03d}',
+                                    train_loader.batch_size, device)
+            score = report['mean_foreground_dice']
+            history.append({'epoch': e, 'lr': optimizer.param_groups[0]['lr'],
+                            'train_ce': tile_losses['train'], 'val_ce': tile_losses['val'],
+                            'mean_foreground_dice': score})
+            if score > best_dice:
+                best_dice, best_epoch = score, e
+                _save_training_checkpoint(destination / 'bestweights.pt', net.state_dict())
+            if scheduler is not None:
+                scheduler.step()
+            _save_training_checkpoint(destination / 'last.pt', {
+                'state_dict': net.state_dict(), 'optimizer': optimizer.state_dict(),
+                'scheduler': None if scheduler is None else scheduler.state_dict(),
+                'epoch': e, 'slices': args.slices,
+                'preprocessing_signature': train_loader.dataset.preprocessing_signature})
+            _write_training_json(destination / 'history.json', history)
+            print(f"Epoch {e+1}/{args.epochs}: CE={tile_losses['train']:.6f}, original-grid Dice={score:.6f}", flush=True)
+            continue
 
         if m == 'val':
             dice_3d_scores = []
@@ -673,6 +674,16 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+
+    if tiling:
+        net.load_state_dict(torch.load(destination / 'bestweights.pt', map_location=device, weights_only=True))
+        final = evaluate_model(net, val_loader.dataset, destination / 'best_predictions',
+                               train_loader.batch_size, device)
+        _write_training_json(destination / 'summary.json', {
+            'complete': True, 'best_epoch': best_epoch, 'best_validation_dice': best_dice,
+            'reloaded_best_dice': final['mean_foreground_dice'],
+            'epochs': args.epochs, 'checkpoint': 'bestweights.pt'})
+        return history
 
 
 def check_data(args):

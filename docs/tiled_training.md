@@ -2,9 +2,11 @@
 
 The eight-stage implementation is connected through `main.py --tiling`.
 Without this flag, `runTraining` keeps the historical full-slice path and losses.
-With it, `run_tiled_training` in `main.py` runs corrected CE, whole-volume
-reconstruction, original-CT validation and checkpoint selection. Both training
-routes live in `main.py` and are selected through the CLI. The ENet architectures are
+With it, the shared epoch and batch loop in `runTraining` uses corrected CE,
+whole-volume reconstruction, original-CT validation and checkpoint selection.
+`_setup_tiled_training` prepares the tile-specific components and restrictions;
+there is no separate tiled training loop. The full-slice path keeps its existing
+losses, metrics and output formats. The ENet architectures are
 unchanged. `--slices 1` selects 2D; odd `--slices >1` selects the existing 2.5D ENet.
 
 ## Example workflow

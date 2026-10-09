@@ -33,8 +33,13 @@ class FullOriginalEvaluationTests(unittest.TestCase):
         threads = torch.get_num_threads()
         torch.set_num_threads(1)
         try:
-            for slices, resample, weighting in [(1, 'none', 'none'), (3, 'xyz', 'inverse_frequency')]:
-                with self.subTest(slices=slices), tempfile.TemporaryDirectory() as directory:
+            for slices, resample, weighting, loss in [
+                    (1, 'none', 'none', 'ce'), (3, 'xyz', 'inverse_frequency', 'ce'),
+                    (1, 'none', 'inverse_frequency', 'dice'),
+                    (1, 'none', 'inverse_frequency', 'ce_dice'),
+                    (1, 'none', 'inverse_frequency', 'boundary'),
+                    (1, 'none', 'inverse_frequency', 'ce_dice_boundary')]:
+                with self.subTest(slices=slices, loss=loss), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     for pid in ('Patient_01', 'Patient_02'):
                         folder = root/'source/train'/pid
@@ -53,16 +58,16 @@ class FullOriginalEvaluationTests(unittest.TestCase):
                     with patch.object(preprocessing, 'sanity_ct', return_value=True), redirect_stdout(io.StringIO()):
                         preprocessing.main(prep)
                     args = SimpleNamespace(dataset='SEGTHOR', data_root=root/'data', dest=root/'training',
-                        tiling=False, loss='ce', mode='full', epochs=1, workers=0, slices=slices,
+                        tiling=False, loss=loss, mode='full', epochs=1, workers=0, slices=slices,
                         gpu=False, seed=0, debug=False, optimizer='adam', scheduler='none',
                         class_weighting=weighting, original_grid_validation=True)
                     with patch.dict(main.datasets_params['SEGTHOR'], {'B':2}), \
                             patch.object(main, 'CrossEntropy', wraps=main.CrossEntropy) as ce, \
                             redirect_stdout(io.StringIO()):
                         main.runTraining(args)
-                        if weighting == 'none':
+                        if loss == 'ce' and weighting == 'none':
                             self.assertIsNone(ce.call_args.kwargs['weights'])
-                        else:
+                        elif loss == 'ce':
                             self.assertIsNotNone(ce.call_args.kwargs['weights'])
                         args.evaluate_checkpoint = args.dest/'bestweights.pt'
                         first = json.loads((args.dest/'original_epoch_000/metrics.json').read_text())
