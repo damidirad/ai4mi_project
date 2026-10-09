@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Run one screening configuration against datasets prepared by the Makefile."""
+"""Prepare or run one screening or confirmation experiment."""
 import argparse
+import copy
+import fcntl
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -19,6 +21,8 @@ FIELDS = {'id', 'hu_clipping', 'resampling', 'tiling', 'slices', 'loss',
 
 def load_config(path):
     config = json.loads(Path(path).read_text())
+    if 'folds' in config:
+        return load_confirmation(config, Path(path))
     if set(config) != {'name', 'training_seed', 'split_seed', 'fold',
                        'validation_patients', 'configurations'}:
         raise ValueError('Unexpected or missing experiment configuration fields')
@@ -61,6 +65,101 @@ def load_config(path):
     return config
 
 
+def load_confirmation(config, path):
+    """Expand three roles, patient folds and training seeds into independent jobs."""
+    required = {'name', 'screening_config', 'baseline', 'top_candidates', 'folds',
+                'training_seeds', 'split_seed', 'validation_patients'}
+    if set(config) != required or config['baseline'] != 'original_enet':
+        raise ValueError('Invalid confirmation configuration or baseline')
+    if not isinstance(config['name'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', config['name']):
+        raise ValueError('Invalid experiment name')
+    for key in ('folds', 'training_seeds'):
+        values = config[key]
+        if (not isinstance(values, list) or not values or
+                any(type(v) is not int or v < 0 for v in values) or len(set(values)) != len(values)):
+            raise ValueError(f'{key} must contain distinct nonnegative integers')
+    for key in ('split_seed', 'validation_patients'):
+        if type(config[key]) is not int or config[key] < (1 if key == 'validation_patients' else 0):
+            raise ValueError(f'Invalid {key}')
+    candidates = config['top_candidates']
+    if set(candidates) != {'TOP1', 'TOP2'}:
+        raise ValueError('Specify TOP1 and TOP2, using null until selected')
+    selected = [value for value in candidates.values() if value is not None]
+    if any(not isinstance(v, str) for v in selected) or len(set(selected)) != len(selected):
+        raise ValueError('Top candidates must be distinct configuration IDs')
+    screening_path = path.parent/config['screening_config']
+    # Read only a screening file, avoiding recursive confirmation references.
+    if 'folds' in json.loads(screening_path.read_text()):
+        raise ValueError('screening_config must reference a screening configuration')
+    screening = load_config(screening_path)
+    available = {row['id']:row for row in screening['configurations']}
+    if any(value not in available for value in selected):
+        raise ValueError('Unknown top candidate')
+    baseline = {'id':'BASELINE', 'hu_clipping':False, 'resampling':'none', 'tiling':False,
+                'slices':1, 'loss':'ce', 'optimizer':'adam', 'scheduler':'none',
+                'augmentation':False, 'epochs':20, 'class_weighting':'none',
+                'original_grid_validation':True}
+    roles = [baseline]
+    for role in ('TOP1', 'TOP2'):
+        candidate = candidates[role]
+        if candidate is None:
+            roles.append({'id':role, 'placeholder':True})
+        else:
+            row = copy.deepcopy(available[candidate])
+            row.update(id=role, source_id=candidate, class_weighting='inverse_frequency',
+                       original_grid_validation=True, epochs=3 if row['tiling'] else 20)
+            roles.append(row)
+    config['runs'] = [{'configuration':row, 'fold':fold, 'training_seed':seed}
+                      for row in roles for fold in config['folds'] for seed in config['training_seeds']]
+    return config
+
+
+def preparation_command(config, row, dataset, source, python, processes):
+    command = [str(python), '-u', str(ROOT/'slice_segthor.py'), '--source_dir', str(source),
+               '--dest_dir', str(dataset), '--retains', str(config['validation_patients']),
+               '--seed', str(config['split_seed']), '--fold', str(config['fold']),
+               '--process', str(processes), '--save_metadata', '--resample', row['resampling']]
+    if row['hu_clipping']:
+        command.append('--hu_clip')
+    if row['tiling']:
+        command += ['--tiling', '--tile-size', '256', '256', '--tile-stride', '128', '128']
+    return command
+
+
+def prepare_dataset(config, row, dataset, source, command):
+    """Prepare once per layout/fold; never reuse a partial or mismatched dataset."""
+    dataset.parent.mkdir(parents=True, exist_ok=True)
+    with (dataset.parent/(dataset.name + '.prepare.lock')).open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('This dataset is being prepared by another process') from None
+        if not dataset.exists():
+            subprocess.run(command, cwd=ROOT, check=True)
+        check_dataset(config, row, dataset, source)
+    print(f'Prepared and verified: {dataset}')
+
+
+def evaluation_command(row, dataset, destination, python):
+    command = [str(python), '-u', str(ROOT/'main.py'), '--dataset', dataset.name,
+               '--data_root', str(dataset.parent), '--dest', str(destination/'original_validation'),
+               '--evaluate-checkpoint', str(destination/'training/bestweights.pt'),
+               '--split', 'val', '--slices', str(row['slices']), '--gpu']
+    if row['tiling']:
+        command.append('--tiling')
+    return command
+
+
+def read_run_metrics(destination, row):
+    metrics = summarize(destination/'training', row)
+    if row.get('original_grid_validation'):
+        report = json.loads((destination/'original_validation/metrics.json').read_text())
+        if report['grid'] != 'original_CT' or report['mean_foreground_dice'] is None:
+            raise ValueError('Original-grid validation was not completed')
+        metrics.update(mean_foreground_dice=report['mean_foreground_dice'], evaluation_grid='original_CT')
+    return metrics
+
+
 def dataset_path(row, root):
     """Match the twelve Makefile targets, including the legacy HU path."""
     if not row['tiling'] and row['resampling'] == 'none':
@@ -82,6 +181,10 @@ def training_command(config, row, dataset, destination, python, workers):
                '--seed', str(config['training_seed']), '--workers', str(workers), '--gpu']
     if row['tiling']:
         command.append('--tiling')
+    if row.get('class_weighting'):
+        command += ['--class-weighting', row['class_weighting']]
+    if row.get('original_grid_validation'):
+        command.append('--original-grid-validation')
     # Augmented runs are deliberately blocked until an augmentation adapter is implemented.
     return command
 
@@ -174,6 +277,10 @@ def summarize(destination, row):
     dice = np.load(destination/f'iter{epoch:03d}'/'dice_3d_val.npy', allow_pickle=False)
     if dice.ndim != 2 or dice.shape[1] != 5 or not np.isfinite(dice).all():
         raise ValueError('Invalid per-patient Dice output')
+    if row.get('original_grid_validation'):
+        report = json.loads((destination/f'original_epoch_{epoch:03d}'/'metrics.json').read_text())
+        return {'best_epoch':epoch, 'mean_foreground_dice':report['mean_foreground_dice'],
+                'evaluation_grid':'original_CT'}
     return {'best_epoch':epoch, 'mean_foreground_dice':float(dice[:,1:].mean()),
             'evaluation_grid':'prepared_volume'}
 
@@ -186,37 +293,66 @@ def write_json(path, value):
 
 def run(args):
     config = load_config(args.config)
-    rows = config['configurations']
-    if args.run_index is not None:
-        if not 0 <= args.run_index < len(rows):
-            raise ValueError('Run index is outside the configuration list')
-        row = rows[args.run_index]
+    confirmation = 'runs' in config
+    if confirmation:
+        if args.run_index is None or not 0 <= args.run_index < len(config['runs']):
+            raise ValueError('Confirmation requires --run-index in the expanded run list')
+        selected = config['runs'][args.run_index]
+        row = selected['configuration']
+        config = {key:value for key,value in config.items() if key != 'runs'}
+        config.update(fold=selected['fold'], training_seed=selected['training_seed'])
+        if row.get('placeholder'):
+            message = f"Select {row['id']} in top_candidates before running this job"
+            print(json.dumps({'run_index':args.run_index, 'fold':config['fold'],
+                              'training_seed':config['training_seed'], 'blocked':message}, indent=2))
+            if args.dry_run:
+                return
+            raise ValueError(message)
     else:
-        row = next((r for r in rows if r['id'] == args.run_id), None)
-        if row is None:
-            raise ValueError(f'Unknown run ID: {args.run_id}')
-    dataset = dataset_path(row, args.data_root.absolute())
-    run_dir = args.results_root.absolute()/config['name']/row['id']/f"seed_{config['training_seed']}"/f'attempt_{args.attempt:03d}'
+        rows = config['configurations']
+        if args.run_index is not None:
+            if not 0 <= args.run_index < len(rows):
+                raise ValueError('Run index is outside the configuration list')
+            row = rows[args.run_index]
+        else:
+            row = next((r for r in rows if r['id'] == args.run_id), None)
+            if row is None:
+                raise ValueError(f'Unknown run ID: {args.run_id}')
+    data_root = args.data_root.absolute()
+    output_root = args.results_root.absolute()/config['name']/row['id']
+    if confirmation:
+        data_root = data_root/config['name']/f"fold_{config['fold']}"
+        output_root = output_root/f"fold_{config['fold']}"
+    dataset = dataset_path(row, data_root)
+    run_dir = output_root/f"seed_{config['training_seed']}"/f'attempt_{args.attempt:03d}'
     destination = run_dir/'training'
     command = training_command(config, row, dataset, destination, args.python.absolute(), args.workers)
+    preparation = preparation_command(config, row, dataset, args.source_dir.absolute(),
+                                      args.python.absolute(), getattr(args, 'processes', 4))
+    evaluation = evaluation_command(row, dataset, run_dir, args.python.absolute()) if confirmation else None
     blocker = 'Augmentation is not integrated; this run must not execute without it' if row['augmentation'] else None
     plan = {'configuration':row, 'dataset':str(dataset), 'run_directory':str(run_dir),
-            'command':command, 'blocked':blocker}
+            'command':command, 'preparation_command':preparation, 'evaluation_command':evaluation,
+            'fold':config['fold'], 'training_seed':config['training_seed'], 'blocked':blocker}
     print(json.dumps(plan, indent=2), flush=True)
     if args.dry_run:
+        return
+    if getattr(args, 'prepare_only', False):
+        prepare_dataset(config, row, dataset, args.source_dir.absolute(), preparation)
         return
     if blocker:
         raise ValueError(blocker)
     data = check_dataset(config, row, dataset, args.source_dir.absolute())
     sources = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(ROOT.glob('*.py'))}
-    identity = {'experiment':{k:v for k,v in config.items() if k != 'configurations'},
-                'configuration':row, 'command':command, 'dataset':data, 'source_sha256':sources}
+    identity = {'experiment':{key:config[key] for key in ('name', 'training_seed', 'split_seed', 'fold', 'validation_patients')},
+                'configuration':row, 'command':command, 'dataset':data, 'source_sha256':sources,
+                'evaluation_command':evaluation}
     manifest_path = run_dir/'runner.json'
     if run_dir.exists():
         if manifest_path.is_file():
             previous = json.loads(manifest_path.read_text())
             if previous.get('status') == 'completed' and previous.get('identity') == identity:
-                if summarize(destination, row) == previous['metrics']:
+                if read_run_metrics(run_dir, row) == previous['metrics']:
                     print('Matching completed run already exists; skipping.')
                     return
         raise FileExistsError(f'{run_dir} already exists; inspect it and use a new --attempt number')
@@ -232,7 +368,10 @@ def run(args):
     try:
         with (run_dir/'train.log').open('x') as log:
             subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
-        manifest['metrics'] = summarize(destination, row)
+        if evaluation is not None:
+            with (run_dir/'evaluation.log').open('x') as log:
+                subprocess.run(evaluation, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
+        manifest['metrics'] = read_run_metrics(run_dir, row)
         manifest['status'] = 'completed'
     except BaseException as error:
         manifest['status'] = 'failed'
@@ -256,10 +395,13 @@ def main():
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--attempt', type=int, default=1, help='Use a new number to retry a failed run')
+    parser.add_argument('--prepare-only', action='store_true',
+                        help='Prepare and verify the selected dataset without training; use a CPU allocation')
+    parser.add_argument('--processes', type=int, default=4, help='Preprocessing workers')
     parser.add_argument('--dry-run', action='store_true', help='Print the plan and blockers without creating files')
     args = parser.parse_args()
-    if args.workers < 0 or args.attempt < 1:
-        parser.error('workers must be nonnegative and attempt must be positive')
+    if args.workers < 0 or args.attempt < 1 or args.processes < 1:
+        parser.error('workers must be nonnegative; attempt and processes must be positive')
     try:
         run(args)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

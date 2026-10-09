@@ -130,3 +130,11 @@ prepared volume, whereas tiled runs use the original CT grid. Do not automatical
 rank these scores as a fair comparison; common original-grid evaluation is still
 needed before final model selection. This runner does not select winners or
 implement the later multi-seed/fold phase or submission export.
+
+## Follow-up comparisons
+
+See [CONFIRMATION.md](CONFIRMATION.md) for the original baseline plus two selected
+candidates across three patient folds and three training seeds. Full-slice
+original-grid checkpoint selection is now available through
+`--original-grid-validation`; this is enabled by the confirmation configuration,
+not retroactively for the screening runs described above.

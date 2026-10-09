@@ -1,0 +1,21 @@
+{
+  "name": "confirmation",
+  "screening_config": "screening.json",
+  "baseline": "original_enet",
+  "top_candidates": {
+    "TOP1": null,
+    "TOP2": null
+  },
+  "folds": [
+    1,
+    2,
+    3
+  ],
+  "training_seeds": [
+    0,
+    1,
+    2
+  ],
+  "split_seed": 0,
+  "validation_patients": 5
+}
