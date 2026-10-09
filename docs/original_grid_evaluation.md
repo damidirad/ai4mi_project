@@ -86,3 +86,34 @@ shapes; preserved NIfTI forms/codes and labels; mismatch rejection; known 2 mm
 surface distances; empty-mask statuses; and complete checkpoint-to-volume
 execution with a small synthetic model. No real training or GPU accuracy is
 claimed by these tests.
+
+## Full-slice checkpoints and baseline comparisons
+
+Full-slice metadata (`slice_segthor.py --save_metadata`) records the resized
+output grid as well as the working and original CT grids. `restore_original_grid`
+now restores schema-1 full-slice labels from the output grid, including the
+cell-centred slice-resize transform, and schema-2 tile labels from the working
+grid. Both routes use identical original-label Dice, HD95 and ASSD definitions.
+
+`main.py --original-grid-validation` selects full-slice checkpoints by mean
+original-CT foreground Dice. It reuses the validation predictions already
+computed during the epoch instead of running an additional model pass. Each
+epoch writes `original_epoch_XXX/metrics.json` and NIfTI predictions. Existing
+prepared-grid metric arrays remain available, but do not determine checkpoint
+selection when this option is enabled. Tiled training already uses this rule.
+
+Checkpoint evaluation accepts full-slice datasets without `--tiling`:
+
+```bash
+python main.py --dataset SEGTHOR --data_root data/confirmation/fold_1 \
+  --dest results/baseline_original_validation --slices 1 \
+  --evaluate-checkpoint results/baseline/bestweights.pt --split val --gpu
+```
+
+`--class-weighting none` restores the original unweighted CE objective and avoids
+the extra training-loader pass for class counts. The default remains
+`inverse_frequency`. The original ENet training recipe uses one slice, CE, Adam
+(lr 0.0005, betas 0.9/0.999, no weight decay), no scheduler and no augmentation,
+HU clipping, resampling or tiling. The confirmation protocol uses 20 epochs and
+original-grid checkpoint selection for all models; it does not claim to reproduce
+the original repository's 2D-Dice checkpoint-selection protocol bit for bit.

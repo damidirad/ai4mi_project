@@ -139,25 +139,26 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                               shuffle=True)
 
 
-    # Calculate class frequencies from the training ground truth
-    class_counts = torch.zeros(K, dtype=torch.float64)
+    weights = None
+    if getattr(args, 'class_weighting', 'inverse_frequency') != 'none':
+        # Calculate class frequencies from the training ground truth
+        class_counts = torch.zeros(K, dtype=torch.float64)
 
-    for data in train_loader:
-        gt = data['gts']  # [B, K, W, H]
-        class_counts += gt.sum(dim=(0, 2, 3)).double()
+        for data in train_loader:
+            gt = data['gts']  # [B, K, W, H]
+            class_counts += gt.sum(dim=(0, 2, 3)).double()
 
-    class_freq = class_counts / class_counts.sum()
+        class_freq = class_counts / class_counts.sum()
 
-    # Inverse square-root frequency
-    weights = 1.0 / torch.sqrt(class_freq + 1e-10)
+        # Inverse square-root frequency
+        weights = 1.0 / torch.sqrt(class_freq + 1e-10)
 
-    # Normalize so the average weight is 1
-    weights = weights / weights.mean()
+        # Normalize so the average weight is 1
+        weights = weights / weights.mean()
 
-    print(">> Training class counts:", class_counts.tolist())
-    print(">> Training class frequencies:", class_freq.tolist())
-    print(">> Class weights:", weights.tolist())
-
+        print(">> Training class counts:", class_counts.tolist())
+        print(">> Training class frequencies:", class_freq.tolist())
+        print(">> Class weights:", weights.tolist())
 
     val_set = build_dataset('val',
                            root_dir,
@@ -173,7 +174,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
-    return (net, optimizer, device, train_loader, val_loader, K, weights.float())
+    return (net, optimizer, device, train_loader, val_loader, K, None if weights is None else weights.float())
 
 
 def _write_training_json(path, value):
@@ -234,7 +235,8 @@ def run_tiled_training(args):
         if not Path(record['source_ct']).with_name('GT.nii.gz').is_file():
             raise ValueError('Original validation GT.nii.gz is required')
     counts = train.class_counts()
-    weights = inverse_frequency_weights(counts)
+    weights = (torch.ones(5) if getattr(args, 'class_weighting', 'inverse_frequency') == 'none'
+               else inverse_frequency_weights(counts))
     criterion = make_tiled_loss(train, args.loss, supervised, weights, counts)
     val_counts = validation.class_counts()
     val_criterion = make_tiled_loss(validation, args.loss, supervised, weights, val_counts)
@@ -319,6 +321,17 @@ def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K, weights = setup(args)
 
+    original_records = None
+    if getattr(args, 'original_grid_validation', False):
+        from evaluate_tiled import load_full_metadata, evaluate_full_predictions, reference_image
+        if args.debug or K != 5:
+            raise ValueError('Original-grid validation requires complete five-class patient volumes')
+        original_records = load_full_metadata(args.data_root / args.dataset / 'val' / 'metadata', 'val')
+        for record in original_records.values():
+            reference_image(record)
+            if not Path(record['source_ct']).with_name('GT.nii.gz').is_file():
+                raise ValueError('Original validation labels are required')
+
     # Decays the LR from its initial value to 0 over all epochs; stepped once per epoch
     scheduler = None
     if args.scheduler == 'cosine':
@@ -360,7 +373,7 @@ def runTraining(args):
     log_assd_val: Tensor = torch.zeros((args.epochs,))
     log_lr: Tensor = torch.zeros((args.epochs,))  # LR used during each epoch
 
-    best_dice: float = 0
+    best_dice: float = -1
 
     for e in range(args.epochs):
         log_lr[e] = optimizer.param_groups[0]['lr']
@@ -631,6 +644,21 @@ def runTraining(args):
         np.save(args.dest / "h95_val.npy", log_h95_val)
         np.save(args.dest / "assd_val.npy", log_assd_val)
 
+        if original_records is not None:
+            def original_predictions():
+                if set(patient_preds) != set(original_records):
+                    raise ValueError('Validation patients do not match metadata')
+                for pid, record in original_records.items():
+                    depth = record['output']['shape'][2]
+                    if set(patient_preds[pid]) != set(range(depth)):
+                        raise ValueError('Missing validation slices')
+                    yield pid, np.stack([patient_preds[pid][z].argmax(0).numpy().astype(np.uint8)
+                                         for z in range(depth)], axis=2)
+            report = evaluate_full_predictions(original_records, original_predictions(),
+                                               args.dest / f'original_epoch_{e:03d}')
+            current_dice = report['mean_foreground_dice']
+            print(f'Original-grid validation Dice: {current_dice:.6f}', flush=True)
+
         if current_dice > best_dice:
             message = f">>> Improved 3D dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
@@ -709,7 +737,7 @@ def evaluate_tiled_checkpoint(args):
     params = datasets_params[args.dataset]
     if params['K'] != 5:
         raise ValueError('Tiled evaluation requires the five-class SegTHOR model')
-    dataset = build_dataset(getattr(args, 'split', None) or 'val', args.data_root / args.dataset, tiling=True,
+    dataset = build_dataset(getattr(args, 'split', None) or 'val', args.data_root / args.dataset, tiling=getattr(args, 'tiling', True),
         img_transform=img_transform, gt_transform=partial(gt_transform, 5), slices=args.slices)
     if args.gpu:
         if torch.cuda.is_available():
@@ -724,7 +752,13 @@ def evaluate_tiled_checkpoint(args):
     model = model_class(1, 5, kernels=params.get('kernels', 8), factor=params.get('factor', 2)).to(device)
     state = torch.load(args.evaluate_checkpoint, map_location='cpu', weights_only=True)
     model.load_state_dict(state, strict=True)
-    report = evaluate_model(model, dataset, args.dest, batch_size=params['B'], device=device)
+    if getattr(args, 'tiling', True):
+        report = evaluate_model(model, dataset, args.dest, batch_size=params['B'], device=device)
+    else:
+        from evaluate_tiled import load_full_metadata, evaluate_full_model
+        split = getattr(args, 'split', None) or 'val'
+        records = load_full_metadata(args.data_root / args.dataset / split / 'metadata', split)
+        report = evaluate_full_model(model, dataset, records, args.dest, batch_size=params['B'], device=device)
     if dataset.test_mode:
         print(f"Saved predictions for {len(report['patients'])} test patients to {args.dest}")
     else:
@@ -752,6 +786,10 @@ def main():
     parser.add_argument('--slices', default=1, type=int,
                         help="Positive odd number of slices per sample: 1 uses 2D; >1 uses ENet_2_5d.")
 
+    parser.add_argument('--class-weighting', choices=('none', 'inverse_frequency'), default='inverse_frequency',
+                        help='Use none to reproduce the original unweighted CE objective')
+    parser.add_argument('--original-grid-validation', action='store_true',
+                        help='Select full-slice checkpoints using original-CT volume Dice (requires metadata)')
     parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw'],
                         help="adam: original setup; adamw: Adam with decoupled weight decay (1e-2).")
     parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
@@ -761,7 +799,7 @@ def main():
     parser.add_argument('--check-data', action='store_true',
                         help='Check train/val batches without training or writing results')
     parser.add_argument('--evaluate-checkpoint', type=Path,
-                        help='With --tiling: predict on original CT grids from a state_dict')
+                        help='Predict on original CT grids from a state_dict; requires preprocessing metadata')
     parser.add_argument('--split', choices=('val', 'test'),
                         help='Checkpoint prediction split (default: val); test requires no labels')
     parser.add_argument('--check-loss', action='store_true',
@@ -776,8 +814,8 @@ def main():
         parser.error('--split requires --evaluate-checkpoint')
     if args.slices <= 0 or args.slices % 2 == 0:
         parser.error('--slices must be a positive odd integer (1 for 2D; 3, 5, ... for 2.5D)')
-    if args.evaluate_checkpoint and (not args.tiling or args.check_data or args.check_loss):
-        parser.error('--evaluate-checkpoint requires --tiling and cannot combine with check modes')
+    if args.evaluate_checkpoint and (args.check_data or args.check_loss):
+        parser.error('--evaluate-checkpoint cannot combine with check modes')
     if args.check_loss and not (args.tiling and args.check_data):
         parser.error('--check-loss requires --tiling --check-data')
 

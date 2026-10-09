@@ -4,10 +4,11 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import torch
 from scipy.ndimage import affine_transform, distance_transform_edt
 
 from geometry import Grid, grid_from_nifti, voxel_mapping
-from preprocessing_metadata import validate_metadata
+from preprocessing_metadata import validate_metadata, load_metadata
 from reconstruct_tiled import predict_working_volume
 from utils import surface
 
@@ -21,10 +22,8 @@ def _labels(array, shape):
 
 def restore_original_grid(working_labels, metadata):
     validate_metadata(metadata)
-    if metadata['schema_version'] != 2:
-        raise ValueError('Original-grid restoration requires tiled metadata')
     original = Grid(metadata['original']['shape'], metadata['original']['affine_ras_mm'])
-    working = Grid(metadata['working']['shape'], metadata['working']['affine_ras_mm'])
+    working = Grid(metadata['output']['shape'], metadata['output']['affine_ras_mm'])
     labels = _labels(working_labels, working.shape)
     mapping = voxel_mapping(working, original)
     # Remove numerical zero terms from solving rotated/flipped affines.
@@ -119,3 +118,74 @@ def evaluate_model(model, dataset, destination, batch_size=8, device='cpu'):
               'mean_foreground_dice': float(np.mean([m[str(k)]['dice'] for m in scored for k in range(1, 5)])) if scored else None}
     (destination / 'metrics.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     return report
+
+
+def load_full_metadata(directory, split):
+    """Load full-slice geometry and reject missing or misidentified patients."""
+    paths = sorted(Path(directory).glob('*.json'))
+    if not paths:
+        raise ValueError('Original-grid evaluation requires full-slice metadata')
+    records = {}
+    for path in paths:
+        record = load_metadata(path)
+        if record['schema_version'] != 1 or record['split'] != split or record['patient_id'] != path.stem:
+            raise ValueError('Expected matching full-slice metadata for the requested split')
+        records[path.stem] = record
+    return records
+
+
+def evaluate_full_predictions(records, predictions, destination, test_mode=False):
+    """Restore complete full-slice label volumes and use the tiled route's metrics."""
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError('Use a new evaluation destination')
+    destination.mkdir(parents=True)
+    patients = {}
+    for pid, labels in predictions:
+        if pid not in records or pid in patients:
+            raise ValueError('Unknown or duplicate prediction patient')
+        record = records[pid]
+        prediction = restore_original_grid(labels, record)
+        metrics = None if test_mode else evaluate_original_prediction(prediction, record)
+        save_original_prediction(prediction, record, destination / f'{pid}.nii.gz')
+        patients[pid] = metrics
+    if set(patients) != set(records):
+        raise ValueError('Missing patient predictions')
+    scored = [value for value in patients.values() if value is not None]
+    report = {'grid': 'original_CT', 'patients': patients,
+              'mean_foreground_dice': float(np.mean([m[str(k)]['dice'] for m in scored
+                                                    for k in range(1, 5)])) if scored else None}
+    (destination / 'metrics.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+    return report
+
+
+def evaluate_full_model(model, dataset, records, destination, batch_size=8, device='cpu'):
+    """Predict the central slice with the existing 2D/2.5D full-slice loader."""
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('batch_size must be positive')
+    indices = {path.stem: index for index, (path, _) in enumerate(dataset.files)}
+    expected = {f'{pid}_{z:04d}' for pid, record in records.items()
+                for z in range(record['output']['shape'][2])}
+    if len(indices) != len(dataset.files) or set(indices) != expected:
+        raise ValueError('Inference requires exactly all patient slices')
+    modes = [(module, module.training) for module in model.modules()]
+
+    def predictions():
+        for pid, record in records.items():
+            shape = tuple(record['output']['shape'])
+            labels = np.empty(shape, dtype=np.uint8)
+            for start in range(0, shape[2], batch_size):
+                zs = list(range(start, min(start + batch_size, shape[2])))
+                images = torch.stack([dataset._load_img_stack(indices[f'{pid}_{z:04d}']) for z in zs]).to(device)
+                logits = model(images)
+                if tuple(logits.shape) != (len(zs), 5, *shape[:2]) or not torch.isfinite(logits).all():
+                    raise ValueError('Expected finite B5XY logits matching full-slice dimensions')
+                labels[:, :, zs] = logits.argmax(1).cpu().numpy().transpose(1, 2, 0)
+            yield pid, labels
+    try:
+        model.eval()
+        with torch.inference_mode():
+            return evaluate_full_predictions(records, predictions(), destination, dataset.test_mode)
+    finally:
+        for module, training in modes:
+            module.training = training
