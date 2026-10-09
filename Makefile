@@ -73,7 +73,7 @@ $(SEGTHOR_DATASETS): $(SEGTHOR_SOURCE)
 	@test ! -e "$@_tmp" || { echo "Temporary output already exists: $@_tmp"; exit 1; }
 	mkdir -p "$(@D)"
 	$(PYTHON) $(CFLAGS) slice_segthor.py --source_dir "$<" --dest_dir "$@_tmp" \
-		--retains $(RETAINS) --seed $(SEED) --fold $(FOLD) --process $(PROCESS) \
+		--retains $(RETAINS) --seed $(SEED) --fold $(FOLD) --process $(PROCESS) --save_metadata \
 		$(PREPROCESS_FLAGS)
 	mv "$@_tmp" "$@"
 

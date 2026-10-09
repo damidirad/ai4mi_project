@@ -1,0 +1,105 @@
+{
+  "name": "screening",
+  "training_seed": 0,
+  "split_seed": 0,
+  "fold": 0,
+  "validation_patients": 5,
+  "configurations": [
+    {
+      "id": "M1",
+      "hu_clipping": true,
+      "resampling": "none",
+      "tiling": false,
+      "slices": 1,
+      "loss": "CE_DICE",
+      "optimizer": "ADAM",
+      "scheduler": "NONE",
+      "augmentation": false,
+      "epochs": 20
+    },
+    {
+      "id": "M2",
+      "hu_clipping": true,
+      "resampling": "none",
+      "tiling": false,
+      "slices": 1,
+      "loss": "CE_DICE",
+      "optimizer": "ADAM",
+      "scheduler": "NONE",
+      "augmentation": true,
+      "epochs": 20
+    },
+    {
+      "id": "M3",
+      "hu_clipping": true,
+      "resampling": "none",
+      "tiling": false,
+      "slices": 1,
+      "loss": "CE_DICE",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 20
+    },
+    {
+      "id": "M4",
+      "hu_clipping": true,
+      "resampling": "none",
+      "tiling": false,
+      "slices": 3,
+      "loss": "CE_DICE",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 20
+    },
+    {
+      "id": "M5",
+      "hu_clipping": true,
+      "resampling": "xy",
+      "tiling": false,
+      "slices": 3,
+      "loss": "CE_DICE",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 20
+    },
+    {
+      "id": "M6",
+      "hu_clipping": true,
+      "resampling": "xyz",
+      "tiling": false,
+      "slices": 3,
+      "loss": "CE_DICE",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 20
+    },
+    {
+      "id": "M7",
+      "hu_clipping": true,
+      "resampling": "xy",
+      "tiling": true,
+      "slices": 3,
+      "loss": "CE_TILED",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 3
+    },
+    {
+      "id": "M8",
+      "hu_clipping": true,
+      "resampling": "xy",
+      "tiling": false,
+      "slices": 3,
+      "loss": "CE_DICE_BOUNDARY",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": true,
+      "epochs": 20
+    }
+  ]
+}
