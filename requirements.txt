@@ -7,3 +7,5 @@ tqdm
 pillow
 scikit-image
 matplotlib
+pandas
+seaborn

@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 from functools import partial
 from typing import Any
@@ -8,6 +9,10 @@ import numpy as np
 import seaborn as sns
 import torch
 from torch.utils.data import DataLoader
+
+# Direct script execution adds scripts/ to sys.path, so expose the project modules.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataset import SliceDataset
 from utils import class2one_hot

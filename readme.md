@@ -178,7 +178,7 @@ $ python viewer/viewer.py --img_source data/TOY2/val/img \
     data/TOY2/val/gt results/toy2/ce/iter000/val results/toy2/ce/iter005/val results/toy2/ce/best_epoch/val \
     --show_img -C 256 --no_contour
 ```
-![Example of the viewer on the TOY example](viewer_toy.png)
+![Example of the viewer on the TOY example](docs/images/viewer_toy.png)
 **Note:** if using it from a SSH session, it requires X to be forwarded ([Unix/BSD](https://man.archlinux.org/man/ssh.1#X), [Windows](https://mobaxterm.mobatek.net/documentation.html#1_4)) for it to work. Note that X forwarding also needs to be enabled on the server side.
 
 
@@ -202,17 +202,24 @@ $ python stitch.py --data_folder results/segthor/ce/best_epoch/val \
 ```
 
 [3D Slicer](https://www.slicer.org/) and [ITK Snap](http://www.itksnap.org) are two popular viewers for medical data, here comparing `GT.nii.gz` and the corresponding stitched prediction `Patient_01.nii.gz`:
-![Viewing label and prediction](3dslicer.png)
+![Viewing label and prediction](docs/images/3dslicer.png)
 
 Zooming on the prediction with smoothing disabled:
-![Viewing the prediction without smoothing](3dslicer_zoom.png)
+![Viewing the prediction without smoothing](docs/images/3dslicer_zoom.png)
 
 
 <a id="plotting-the-metrics"></a>
 ### Plotting the metrics
 There are some facilities to plot the metrics saved by [`main.py`](main.py):
+
+Run the plotting tools from the repository root after installing `requirements.txt`.
+They are located in `scripts/`: `plot.py` for individual metric files,
+`plot_metrics.py` for comparisons, `plot_3d_metrics.py` for volume metrics,
+and `plot_other.py` for dataset class distributions. Each supports `--help`.
+For example, use `python scripts/plot_other.py --help`; module execution
+with `python -m scripts.plot_other --help` is also supported.
 ```
-$ python plot.py --help
+$ python scripts/plot.py --help
 usage: plot.py [-h] --metric_file METRIC_MODE.npy [--dest METRIC_MODE.png] [--headless]
 
 Plot data over time
@@ -224,9 +231,9 @@ options:
   --dest METRIC_MODE.png
                         Optional: save the plot to a .png file
   --headless            Does not display the plot and save it directly (implies --dest to be provided.
-$ python plot.py --metric_file results/segthor/ce/dice_val.npy --dest results/segthor/ce/dice_val.png
+$ python scripts/plot.py --metric_file results/segthor/ce/dice_val.npy --dest results/segthor/ce/dice_val.png
 ```
-![Validation DSC](dice_val.png)
+![Validation DSC](docs/images/dice_val.png)
 
 
 <a id="submission-and-scoring"></a>
@@ -244,7 +251,7 @@ Groups will have to submit:
 
 The main criterions for scoring will include (listed here only for convenience, please see Canvas for reference rubric):
 * improvement or lack thereof of performances over baseline;
-* code quality/clear [git use](git.md);
+* code quality/clear [git use](docs/git.md);
 * the [final choice of metrics](https://metrics-reloaded.dkfz.de/) (they need to be in 3D);
 * correctness of the computed metrics (on the validation set);
 * oral presentation.
