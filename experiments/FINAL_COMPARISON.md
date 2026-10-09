@@ -1,13 +1,13 @@
-# Confirm promising models across patients and training seeds
+# Final comparison across patients and training seeds
 
-The same `run_experiments.py` runner reads `confirmation.json`. This protocol
-compares the original ENet training recipe with two explicitly selected screening
+The same `run_experiments.py` runner reads `final_comparison.json`. This protocol
+compares the original ENet training recipe with two explicitly selected initial comparison
 configurations. It never chooses winners from incomplete or mixed-grid scores.
 
 ## Patient folds
 
 The raw patient IDs are sorted, shuffled once with split seed 0, then divided into
-blocks of five. Fold 0 was used for screening. Folds 1, 2 and 3 hold out the next
+blocks of five. Fold 0 was used for the initial comparison. Folds 1, 2 and 3 hold out the next
 three blocks for validation. All other patients train each model. These are
 patient-level holdouts with non-overlapping validation groups, **not three equal
 K-fold partitions of the entire dataset**. At least 20 patients are required for
@@ -15,13 +15,13 @@ the configured blocks. Every model and training seed uses the same patients in
 a given fold. The raw source inventory must remain unchanged between runs.
 
 Training sets overlap between folds. The expanded runs are not 27 independent
-patient cohorts. Candidate selection already used the screening data; this is a
+patient cohorts. Candidate selection already used the initial comparison data; this is a
 robustness comparison, not an untouched final test. Do not use test-set outcomes
 to select candidates.
 
 ## Model selection and baseline
 
-Set `top_candidates.TOP1` and `TOP2` to distinct IDs from `screening.json` only
+Set `top_candidates.TOP1` and `TOP2` to distinct IDs from `initial_comparison.json` only
 when the candidates are chosen. Their initial null values are intentional;
 placeholder jobs print a blocker and cannot train. The baseline can run while
 these placeholders remain unset. Selected augmented candidates stay blocked
@@ -41,7 +41,7 @@ All models select their best checkpoint by mean foreground 3D Dice on the
 and empty-mask conventions in `evaluate_tiled.py`. This shared evaluation
 protocol deliberately differs from the initial repo's 2D-Dice checkpoint
 selection. The selected checkpoint is reloaded and evaluated again before a
-confirmation run is marked completed.
+final comparison run is marked completed.
 
 ## Run index mapping
 
@@ -55,7 +55,7 @@ Within each row below, indices correspond to seeds 0, 1, 2 in order.
 | TOP2 | 18, 19, 20 | 21, 22, 23 | 24, 25, 26 |
 
 ```bash
-ai4mi/bin/python run_experiments.py --config experiments/confirmation.json \
+ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
   --run-index 0 --dry-run
 ```
 
@@ -73,25 +73,25 @@ There is no need to rerun preprocessing for each training seed.
 ```bash
 # Baseline datasets for all three folds.
 for index in 0 3 6; do
-  ai4mi/bin/python run_experiments.py --config experiments/confirmation.json \
+  ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
     --run-index "$index" --prepare-only --processes 4
 done
 
 # After selecting TOP1 and TOP2, prepare their datasets as well.
 for index in 9 12 15 18 21 24; do
-  ai4mi/bin/python run_experiments.py --config experiments/confirmation.json \
+  ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
     --run-index "$index" --prepare-only --processes 4
 done
 ```
 
-Data lives under `data/confirmation/fold_N/`, using the same layout names as the
+Data lives under `data/final_comparison/fold_N/`, using the same layout names as the
 Makefile. Candidates with identical preprocessing reuse the same verified data.
 Existing partial or mismatched output is refused; no data is deleted. A file lock
 prevents two processes from preparing the same dataset concurrently. Use
 `--source-dir` and `--data-root` if your data is elsewhere. Training never starts
 preprocessing automatically, so GPU jobs do not race or spend allocation time
-preparing data. The original Makefile targets still describe the screening split;
-changing their FOLD variable does not produce the confirmation directory layout.
+preparing data. The original Makefile targets still describe the initial comparison split;
+changing their FOLD variable does not produce the final comparison directory layout.
 
 ## Submit to Snellius
 
@@ -100,10 +100,10 @@ From the repository root with the Python environment's required modules loaded:
 ```bash
 mkdir -p results/slurm
 # Run the nine baseline jobs, up to four concurrently.
-sbatch snellius/confirmation.sbatch
+sbatch snellius/final_comparison.sbatch
 
 # Once candidates, augmentation and datasets are ready, run all 27 jobs.
-sbatch --array=0-26%4 snellius/confirmation.sbatch
+sbatch --array=0-26%4 snellius/final_comparison.sbatch
 ```
 
 Each task requests one H100, 16 CPUs, 180 GiB host RAM and six hours, including
@@ -117,7 +117,7 @@ the Python runner itself.
 Results are isolated by role, fold, seed and attempt:
 
 ```text
-results/confirmation/BASELINE/fold_1/seed_0/attempt_001/
+results/final_comparison/BASELINE/fold_1/seed_0/attempt_001/
   runner.json
   train.log
   evaluation.log

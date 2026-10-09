@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=segthor-screening
+#SBATCH --job-name=segthor-initial_comparison
 #SBATCH --partition=gpu_h100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -20,5 +20,5 @@ export MKL_NUM_THREADS=4
 export OPENBLAS_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 srun "$EXPERIMENT_PYTHON" run_experiments.py \
-    --config experiments/screening.json \
+    --config experiments/initial_comparison.json \
     --run-index "${SLURM_ARRAY_TASK_ID:-0}" --workers 4 "$@"

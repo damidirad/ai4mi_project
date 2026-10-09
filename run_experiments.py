@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare or run one screening or confirmation experiment."""
+"""Prepare or run one initial or final comparison experiment."""
 import argparse
 import copy
 import fcntl
@@ -22,7 +22,7 @@ FIELDS = {'id', 'hu_clipping', 'resampling', 'tiling', 'slices', 'loss',
 def load_config(path):
     config = json.loads(Path(path).read_text())
     if 'folds' in config:
-        return load_confirmation(config, Path(path))
+        return load_final_comparison(config, Path(path))
     if set(config) != {'name', 'training_seed', 'split_seed', 'fold',
                        'validation_patients', 'configurations'}:
         raise ValueError('Unexpected or missing experiment configuration fields')
@@ -65,12 +65,12 @@ def load_config(path):
     return config
 
 
-def load_confirmation(config, path):
+def load_final_comparison(config, path):
     """Expand three roles, patient folds and training seeds into independent jobs."""
-    required = {'name', 'screening_config', 'baseline', 'top_candidates', 'folds',
+    required = {'name', 'initial_comparison_config', 'baseline', 'top_candidates', 'folds',
                 'training_seeds', 'split_seed', 'validation_patients'}
     if set(config) != required or config['baseline'] != 'original_enet':
-        raise ValueError('Invalid confirmation configuration or baseline')
+        raise ValueError('Invalid final comparison configuration or baseline')
     if not isinstance(config['name'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', config['name']):
         raise ValueError('Invalid experiment name')
     for key in ('folds', 'training_seeds'):
@@ -87,12 +87,12 @@ def load_confirmation(config, path):
     selected = [value for value in candidates.values() if value is not None]
     if any(not isinstance(v, str) for v in selected) or len(set(selected)) != len(selected):
         raise ValueError('Top candidates must be distinct configuration IDs')
-    screening_path = path.parent/config['screening_config']
-    # Read only a screening file, avoiding recursive confirmation references.
-    if 'folds' in json.loads(screening_path.read_text()):
-        raise ValueError('screening_config must reference a screening configuration')
-    screening = load_config(screening_path)
-    available = {row['id']:row for row in screening['configurations']}
+    initial_comparison_path = path.parent/config['initial_comparison_config']
+    # Read only an initial comparison file, avoiding recursive final comparison references.
+    if 'folds' in json.loads(initial_comparison_path.read_text()):
+        raise ValueError('initial_comparison_config must reference an initial comparison configuration')
+    initial_comparison = load_config(initial_comparison_path)
+    available = {row['id']:row for row in initial_comparison['configurations']}
     if any(value not in available for value in selected):
         raise ValueError('Unknown top candidate')
     baseline = {'id':'BASELINE', 'hu_clipping':False, 'resampling':'none', 'tiling':False,
@@ -293,10 +293,10 @@ def write_json(path, value):
 
 def run(args):
     config = load_config(args.config)
-    confirmation = 'runs' in config
-    if confirmation:
+    final_comparison = 'runs' in config
+    if final_comparison:
         if args.run_index is None or not 0 <= args.run_index < len(config['runs']):
-            raise ValueError('Confirmation requires --run-index in the expanded run list')
+            raise ValueError('Final comparison requires --run-index in the expanded run list')
         selected = config['runs'][args.run_index]
         row = selected['configuration']
         config = {key:value for key,value in config.items() if key != 'runs'}
@@ -320,7 +320,7 @@ def run(args):
                 raise ValueError(f'Unknown run ID: {args.run_id}')
     data_root = args.data_root.absolute()
     output_root = args.results_root.absolute()/config['name']/row['id']
-    if confirmation:
+    if final_comparison:
         data_root = data_root/config['name']/f"fold_{config['fold']}"
         output_root = output_root/f"fold_{config['fold']}"
     dataset = dataset_path(row, data_root)
@@ -329,7 +329,7 @@ def run(args):
     command = training_command(config, row, dataset, destination, args.python.absolute(), args.workers)
     preparation = preparation_command(config, row, dataset, args.source_dir.absolute(),
                                       args.python.absolute(), getattr(args, 'processes', 4))
-    evaluation = evaluation_command(row, dataset, run_dir, args.python.absolute()) if confirmation else None
+    evaluation = evaluation_command(row, dataset, run_dir, args.python.absolute()) if final_comparison else None
     blocker = 'Augmentation is not integrated; this run must not execute without it' if row['augmentation'] else None
     plan = {'configuration':row, 'dataset':str(dataset), 'run_directory':str(run_dir),
             'command':command, 'preparation_command':preparation, 'evaluation_command':evaluation,
@@ -385,7 +385,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=ROOT/'experiments/screening.json')
+    parser.add_argument('--config', type=Path, default=ROOT/'experiments/initial_comparison.json')
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument('--run-id', help='Configuration ID, e.g. M1')
     selection.add_argument('--run-index', type=int, help='Zero-based index for Slurm arrays')

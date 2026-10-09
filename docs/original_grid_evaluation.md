@@ -105,7 +105,7 @@ selection when this option is enabled. Tiled training already uses this rule.
 Checkpoint evaluation accepts full-slice datasets without `--tiling`:
 
 ```bash
-python main.py --dataset SEGTHOR --data_root data/confirmation/fold_1 \
+python main.py --dataset SEGTHOR --data_root data/final_comparison/fold_1 \
   --dest results/baseline_original_validation --slices 1 \
   --evaluate-checkpoint results/baseline/bestweights.pt --split val --gpu
 ```
@@ -114,6 +114,6 @@ python main.py --dataset SEGTHOR --data_root data/confirmation/fold_1 \
 the extra training-loader pass for class counts. The default remains
 `inverse_frequency`. The original ENet training recipe uses one slice, CE, Adam
 (lr 0.0005, betas 0.9/0.999, no weight decay), no scheduler and no augmentation,
-HU clipping, resampling or tiling. The confirmation protocol uses 20 epochs and
+HU clipping, resampling or tiling. The final comparison protocol uses 20 epochs and
 original-grid checkpoint selection for all models; it does not claim to reproduce
 the original repository's 2D-Dice checkpoint-selection protocol bit for bit.

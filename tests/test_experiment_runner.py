@@ -1,4 +1,4 @@
-"""Screening plans, dataset provenance and isolated run lifecycle."""
+"""Initial comparison plans, dataset provenance and isolated run lifecycle."""
 import contextlib
 import copy
 import io
@@ -19,10 +19,10 @@ import run_experiments as runner
 
 class ExperimentRunnerTests(unittest.TestCase):
     def setUp(self):
-        self.config = runner.load_config(runner.ROOT/'experiments/screening.json')
+        self.config = runner.load_config(runner.ROOT/'experiments/initial_comparison.json')
 
     def args(self, root, **overrides):
-        args = dict(config=runner.ROOT/'experiments/screening.json', run_id='M1',
+        args = dict(config=runner.ROOT/'experiments/initial_comparison.json', run_id='M1',
                     run_index=None, data_root=root/'data', source_dir=root/'raw',
                     results_root=root/'results', python=Path('/usr/bin/python3'),
                     workers=4, attempt=1, dry_run=False)
@@ -123,7 +123,7 @@ class ExperimentRunnerTests(unittest.TestCase):
             args = self.args(root)
             runner.run(args)
             self.assertEqual(process.call_count, 2)
-            manifest = root/'results/screening/M1/seed_0/attempt_001/runner.json'
+            manifest = root/'results/initial_comparison/M1/seed_0/attempt_001/runner.json'
             self.assertEqual(json.loads(manifest.read_text())['status'], 'completed')
             runner.run(args)
             self.assertEqual(process.call_count, 2)

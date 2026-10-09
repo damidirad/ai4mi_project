@@ -1,4 +1,4 @@
-"""Fold/seed expansion, explicit candidate selection and confirmation execution."""
+"""Fold/seed expansion, explicit candidate selection and final comparison execution."""
 import contextlib
 import io
 import json
@@ -11,12 +11,12 @@ from unittest.mock import patch
 import run_experiments as runner
 
 
-class ConfirmationRunnerTests(unittest.TestCase):
+class FinalComparisonRunnerTests(unittest.TestCase):
     def config(self, root, **updates):
-        config = json.loads((runner.ROOT/'experiments/confirmation.json').read_text())
-        config['screening_config'] = str(runner.ROOT/'experiments/screening.json')
+        config = json.loads((runner.ROOT/'experiments/final_comparison.json').read_text())
+        config['initial_comparison_config'] = str(runner.ROOT/'experiments/initial_comparison.json')
         config.update(updates)
-        path = root/'confirmation.json'
+        path = root/'final_comparison.json'
         path.write_text(json.dumps(config))
         return path
 
@@ -113,7 +113,7 @@ class ConfirmationRunnerTests(unittest.TestCase):
                 self.config(root, top_candidates={'TOP1':'M1', 'TOP2':'M7'})
                 runner.run(args)
                 self.assertEqual(process.call_count, 3)
-                manifest_path = root/'results/confirmation/BASELINE/fold_1/seed_0/attempt_001/runner.json'
+                manifest_path = root/'results/final_comparison/BASELINE/fold_1/seed_0/attempt_001/runner.json'
                 manifest = json.loads(manifest_path.read_text())
                 self.assertEqual(manifest['status'], 'completed')
                 self.assertEqual(manifest['metrics']['evaluation_grid'], 'original_CT')

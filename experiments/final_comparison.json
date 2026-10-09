@@ -1,6 +1,6 @@
 {
-  "name": "confirmation",
-  "screening_config": "screening.json",
+  "name": "final_comparison",
+  "initial_comparison_config": "initial_comparison.json",
   "baseline": "original_enet",
   "top_candidates": {
     "TOP1": null,

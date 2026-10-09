@@ -1,8 +1,8 @@
-# Screening experiments
+# Initial comparison experiments
 
-`run_experiments.py` executes one configuration from `screening.json` by calling
+`run_experiments.py` executes one configuration from `initial_comparison.json` by calling
 `main.py`. It does not implement training or submit jobs itself. Code and run
-settings are recorded with each attempt. M1 is the reference within this screen,
+settings are recorded with each attempt. M1 is the reference within this initial comparison,
 not the original unweighted-CE baseline. A faithful original baseline is a
 separate experiment that is not included in the supplied eight configurations.
 
@@ -18,7 +18,7 @@ separate experiment that is not included in the supplied eight configurations.
 | M8 | Yes | xy | No | 3 | CE_DICE_BOUNDARY | AdamW | cosine | Yes | 20 |
 
 `CE_TILED` maps to `--tiling --loss ce`. M7's three epochs are an explicit
-screening budget, not a claim of equal optimizer updates to the other runs.
+initial comparison budget, not a claim of equal optimizer updates to the other runs.
 All configurations use full supervision, split seed 0, fold 0, five validation
 patients and training seed 0.
 
@@ -83,20 +83,20 @@ to an alternative compatible interpreter if needed.
 
 ```bash
 mkdir -p results/slurm
-sbatch snellius/screening.sbatch
+sbatch snellius/initial_comparison.sbatch
 ```
 
 By default only index 0 (M1) is submitted. Add `--account=...` to `sbatch` if your
 allocation requires an explicit account. Paths below are examples of overrides:
 
 ```bash
-sbatch snellius/screening.sbatch --source-dir /path/to/raw/scans
+sbatch snellius/initial_comparison.sbatch --source-dir /path/to/raw/scans
 ```
 
 Once augmentation is integrated, the same script can schedule independent jobs:
 
 ```bash
-sbatch --array=0-7%2 snellius/screening.sbatch
+sbatch --array=0-7%2 snellius/initial_comparison.sbatch
 ```
 
 The `%2` caps concurrent runs at two. Do not submit this full array while the
@@ -107,7 +107,7 @@ augmentation blocker remains. These instructions do not submit jobs themselves.
 Each attempt has its own directory:
 
 ```text
-results/screening/M1/seed_0/attempt_001/
+results/initial_comparison/M1/seed_0/attempt_001/
   runner.json
   train.log
   training/
@@ -133,8 +133,8 @@ implement the later multi-seed/fold phase or submission export.
 
 ## Follow-up comparisons
 
-See [CONFIRMATION.md](CONFIRMATION.md) for the original baseline plus two selected
+See [FINAL_COMPARISON.md](FINAL_COMPARISON.md) for the original baseline plus two selected
 candidates across three patient folds and three training seeds. Full-slice
 original-grid checkpoint selection is now available through
-`--original-grid-validation`; this is enabled by the confirmation configuration,
-not retroactively for the screening runs described above.
+`--original-grid-validation`; this is enabled by the final comparison configuration,
+not retroactively for the initial comparison runs described above.
