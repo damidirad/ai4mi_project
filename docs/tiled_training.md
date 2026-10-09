@@ -1,112 +1,54 @@
-# Stage 8: complete optional tiled training
+# Optional tiled training
 
-The eight-stage implementation is connected through `main.py --tiling`.
-Without this flag, `runTraining` keeps the historical full-slice path and losses.
-With it, the shared epoch and batch loop in `runTraining` uses corrected CE,
-whole-volume reconstruction, original-CT validation and checkpoint selection.
-`_setup_tiled_training` prepares the tile-specific components and restrictions;
-there is no separate tiled training loop. The full-slice path keeps its existing
-losses, metrics and output formats. The ENet architectures are
-unchanged. `--slices 1` selects 2D; odd `--slices >1` selects the existing 2.5D ENet.
+Use `--tiling` to train and evaluate ENet on tiles instead of full slices.
 
 ## Example workflow
 
-Keep the dataset's configured name (e.g. SEGTHOR) under a separate parent so
-existing preprocessing is not overwritten. All output directories must be new.
-Replace DATA with the raw dataset path.
+Replace `DATA` with the raw dataset path. Use new output directories and keep
+the dataset name `SEGTHOR` under the chosen data root, as shown below.
 
 ```bash
-# Prepare tiles with XYZ resampling. Use xy or none for the other modes.
+# Prepare tiles. Use xy or none for other resampling modes.
 python slice_segthor.py --source_dir DATA --dest_dir data/tiled_xyz/SEGTHOR \
   --retains 5 --seed 0 --resample xyz --tiling \
   --tile-size 256 256 --tile-stride 128 128
 
-# Optional diagnostics. The parser requires --dest, but checks do not write it.
-python main.py --dataset SEGTHOR --data_root data/tiled_xyz --dest results/check \
-  --tiling --check-data --check-loss --loss ce --slices 3 --workers 0
-
-# Explicit training example; this documentation does not execute a real run.
+# Train.
 python main.py --dataset SEGTHOR --data_root data/tiled_xyz --dest results/tiled_xyz \
   --tiling --loss ce --mode full --slices 3 --epochs 20 \
   --optimizer adamw --scheduler cosine --seed 0 --workers 0 --gpu
 
-# Evaluate the selected state_dict in a new directory.
+# Evaluate the best checkpoint on validation data.
 python main.py --dataset SEGTHOR --data_root data/tiled_xyz --dest results/tiled_xyz_eval \
   --tiling --evaluate-checkpoint results/tiled_xyz/bestweights.pt --slices 3 --gpu
 ```
 
-## Training behavior
+## Important options and requirements
 
-- Training and validation must have matching preprocessing configurations and
-  disjoint patient IDs. The five-class SegTHOR configuration is required.
-- Tiles use uniform shuffled sampling. Class counts exclude padding and correct
-  overlap. Class weights are derived only from training; validation reuses them.
-- Only `--loss ce` is supported for tiles. `--mode partial` retains the existing
-  SEGTHOR supervised IDs `[0,1,3,4]`. Other tiled loss choices fail before I/O.
-- ENet tile dimensions must be multiples of 8; 256×256 is the default and normal
-  choice. Very small tiles or batches can still violate architecture/BatchNorm
-  constraints. The integration smoke uses 32×32 tiles and batch size 2.
-- Adam/AdamW and optional cosine scheduling follow the existing parameter choices.
-  Epoch loss is weighted by batch sample counts, including a short last batch.
-- Every epoch reconstructs complete validation patients, restores the original
-  grid and evaluates against original GT. It also records tiled validation CE.
-- Best weights are selected by mean original-grid Dice over patients and four
-  foreground classes; ties keep the earlier checkpoint. The best weights are
-  reloaded and evaluated again at the end.
-- `--debug` limits training centres to ten but keeps full validation. It is not
-  a tiny validation run. Diagnostic subsets are not representative model scores.
+- Use the five-class SEGTHOR configuration. Training and validation must use
+  matching preprocessing and separate patients.
+- Only `--loss ce` is supported. Use `--mode full` for all classes or
+  `--mode partial` for supervised class IDs `[0,1,3,4]`.
+- `--slices 1` selects 2D; an odd value greater than 1 selects 2.5D.
+  Evaluation must use the same slice count and preprocessing as training.
+- Tile dimensions must be multiples of 8; use the default 256×256 tiles.
+- `--gpu` enables GPU use; omit it to run on CPU.
+- Output directories must not already exist. Training does not resume automatically.
 
-One epoch over tiles has more optimizer steps than an epoch over full slices.
-Identical epoch counts are not matched experimental training budgets. The
-current objective weights working voxels before class weights, not patients
-or original physical volume equally. Compare experimental budgets deliberately.
+See [resampling options](resampling.md) for `none`, `xy` and `xyz`.
 
-## Outputs
+## Main outputs
 
-- `run.json`: arguments, device/PyTorch version, corrected training class counts,
-  class weights, supervised IDs, sampling definition and both metadata snapshots.
-- `history.json`: per-epoch learning rate, training/validation CE and original-grid
-  foreground Dice.
-- `epoch_XXX/`: original-grid validation NIfTI volumes and class/patient metrics.
-- `bestweights.pt`: plain state_dict usable by `--evaluate-checkpoint`.
-- `last.pt`: last model/optimizer/scheduler state, epoch and basic configuration.
-- `best_predictions/`: inference and metrics after reloading bestweights.pt.
-- `summary.json`: completion and selected/reloaded checkpoint scores.
-
-The destination must not exist. Checkpoint files use temporary-file replacement;
-this is not transactional whole-run storage. There is no automatic resume.
-Per-epoch predictions consume storage; surface metrics and full validation can
-be expensive. Checkpoints are not cryptographically bound to a dataset; the
-recorded configuration must match any subsequent evaluation choice. Seeds are
-set, but bitwise GPU determinism is not promised.
-
-## Verification and limits
-
-```bash
-PYTHONPATH=tests ai4mi/bin/python -m unittest \
-  test_tiled_training test_evaluate_tiled test_reconstruct_tiled test_tiled_losses \
-  test_tiled_dataset test_tiling test_preprocessing_metadata test_geometry test_resampling_cli -v
-```
-
-The smoke prepares real synthetic NIfTI files, resamples/saves overlapping and
-padded tiles, trains the actual 2D/2.5D ENets for two epochs, reconstructs original
-volumes, checks Adam/AdamW and cosine scheduling, and reloads the best checkpoint.
-It covers none/xy/xyz and full/partial supervision. Only the preprocessing
-sanity check for the real dataset's fixed 512×512/minimum-depth bounds is bypassed.
-Other tests cover mathematical loss/gradient equivalence, metadata, missing
-files, geometry, masks and the unchanged legacy dispatch.
-
-These are CPU synthetic tests, not a real SegTHOR/GPU training experiment or
-proof of segmentation improvement. The older test_simple_resampling.py suite
-still contains failures predating this work; see the CLI migration notes.
-No original data, remote branch or full training job is modified by these tests.
+- `bestweights.pt`: checkpoint selected by validation Dice on the original CT grid.
+- `history.json`: training loss, validation loss and Dice per epoch.
+- `best_predictions/`: predictions and metrics from the best checkpoint.
+- `summary.json`: final results and selected checkpoint scores.
 
 ## Predict unlabelled test scans
 
-Prepare `SOURCE/test/Patient_XX.nii.gz` using the metadata directory from the
-training dataset associated with the chosen checkpoint. This mode reads no
-training images or labels and reuses the saved HU window, target spacing and
-tile layout. Do not supply preprocessing overrides. The destination must be new.
+Place scans at `SOURCE/test/Patient_XX.nii.gz`. Reuse the metadata from the
+training dataset associated with the checkpoint; do not add preprocessing
+overrides. Use new destination directories.
 
 ```bash
 python slice_segthor.py --source_dir SOURCE --dest_dir data/test_tiled/SEGTHOR \
@@ -116,17 +58,6 @@ python main.py --dataset SEGTHOR --data_root data/test_tiled \
   --evaluate-checkpoint results/tiled_xyz/bestweights.pt --gpu
 ```
 
-Use the same slice count as training. Weights do not encode the slice count or
-bind themselves to preprocessing metadata, so select the matching training run.
-The test preprocessing route is sequential. It writes images, validity masks
-and metadata without ground-truth tiles. An interrupted destination must be
-inspected and a new destination chosen before retrying.
-
-Predictions preserve the original CT grid and are exported as `Patient_XX.nii.gz`.
-The JSON report records patient IDs with null metrics because test labels are
-unavailable. Omitting `--split` keeps validation evaluation; explicit `--split`
-is only accepted with checkpoint evaluation. Submission packaging is separate.
-
-```bash
-PYTHONPATH=tests ai4mi/bin/python -m unittest test_tiled_test_route -v
-```
+Use the same `--slices` value as training. Predictions are exported as
+`Patient_XX.nii.gz` on the original CT grid. No scores are calculated without
+ground-truth labels.

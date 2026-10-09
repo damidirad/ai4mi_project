@@ -315,19 +315,17 @@ It may happen that Pytorch, when installed through pip, was compiled for Numpy 1
 ### Viewer on Windows
 Windows has different paths names (`\` in stead of `/`), so the default regex in the viewer needs to be changed to `--id_regex=".*\\\\(.*).png"`.
 
-### Optional voxel resampling
+### Resampling during preprocessing
 
 Preprocessing accepts `--resample none|xy|xyz` (default: `none`).
 Use `xy` to preserve Z or `xyz` to resample all axes. See
-[resampling CLI](docs/resampling_cli.md) for target spacing and migration examples.
+[resampling](docs/resampling.md) for target spacing options and examples.
 
 ### Optional tile preprocessing and training
 
 `slice_segthor.py --tiling` extracts fixed tiles instead of resizing full slices.
-It supports all resampling modes and writes geometry and padding masks.
-`main.py --tiling --loss ce` trains with overlap-corrected loss and original-grid
-volume validation. Use `--slices 3` for the existing 2.5D model.
+`main.py --tiling --loss ce` trains on these tiles. Use `--slices 1` for 2D
+or `--slices 3` for 2.5D.
 
-See [the complete tiled workflow](docs/tiled_training.md) for preprocessing,
-diagnostics, training, checkpoint evaluation, supported options and tests.
-Without `--tiling`, the historical full-slice route remains active.
+See [tiled training](docs/tiled_training.md) for preprocessing, training,
+checkpoint evaluation and predictions on unlabelled test scans.
