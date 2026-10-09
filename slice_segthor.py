@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import pickle
+import json
 import random
 import argparse
 import warnings
@@ -39,7 +40,7 @@ from skimage.transform import resize
 
 from utils import map_, tqdm_
 from geometry import grid_from_nifti
-from preprocessing_metadata import build_metadata, save_metadata
+from preprocessing_metadata import build_metadata, save_metadata, load_metadata
 from tiling import TileLayout, write_patient_tiles
 
 
@@ -158,7 +159,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
 
     if tiling:
         norm_ct = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
-        write_patient_tiles(dest_path / 'tiles' / id_, norm_ct, gt, layout)
+        write_patient_tiles(dest_path / 'tiles' / id_, norm_ct, None if test_mode else gt, layout)
         save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
         return tuple(np.linalg.norm(np.asarray(metadata['working']['affine_ras_mm'])[:3, :3], axis=0))
 
@@ -232,7 +233,40 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
     return training_ids, validation_ids, test_ids
 
 
+def prepare_test_tiles(args):
+    """Prepare unlabelled scans using settings saved with the training tiles."""
+    paths = sorted(Path(args.test_from_metadata).glob('*.json'))
+    if not paths:
+        raise ValueError('No training metadata found')
+    records = [load_metadata(path) for path in paths]
+    signatures = set()
+    for record in records:
+        if record['schema_version'] != 2 or record['split'] != 'train':
+            raise ValueError('Expected tiled training metadata')
+        signatures.add(json.dumps({key: record[key] for key in
+            ('resample', 'requested_spacing_mm', 'intensity', 'interpolation')} |
+            {'size': record['tiling']['size'], 'stride': record['tiling']['stride']}, sort_keys=True))
+    if len(signatures) != 1:
+        raise ValueError('Training metadata has inconsistent preprocessing settings')
+    record = records[0]
+    source = Path(args.source_dir)
+    scans = sorted((source / 'test').glob('*.nii.gz'))
+    if not scans:
+        raise ValueError('Expected unlabelled scans in source_dir/test/*.nii.gz')
+    destination = Path(args.dest_dir)
+    if destination.exists():
+        raise FileExistsError('Test preprocessing requires a new destination')
+    for scan in scans:
+        pid = scan.name[:-7]
+        slice_patient(pid, destination / 'test', source, (256, 256),
+                      test_mode=True, target_spacing=record['requested_spacing_mm'],
+                      hu_window=record['intensity']['window'], tiling=True,
+                      tile_size=record['tiling']['size'], tile_stride=record['tiling']['stride'])
+
+
 def main(args: argparse.Namespace):
+    if getattr(args, 'test_from_metadata', None):
+        return prepare_test_tiles(args)
     src_path: Path = Path(args.source_dir)
     dest_path: Path = Path(args.dest_dir)
 
@@ -293,6 +327,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--source_dir', type=str, required=True)
     parser.add_argument('--dest_dir', type=str, required=True)
 
+    parser.add_argument('--test-from-metadata', type=Path,
+                        help='Prepare test scans only, reusing a tiled train/metadata directory')
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--tiling', action='store_true',
                         help='Extract XY tiles instead of resizing slices; always saves metadata')
@@ -313,6 +349,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
+    if args.test_from_metadata:
+        if (args.tiling or args.hu_clip or args.resample != 'none' or
+                args.target_spacing is not None or args.tile_size is not None or
+                args.tile_stride is not None or args.shape != [256, 256]):
+            parser.error('--test-from-metadata supplies all preprocessing settings; omit overrides')
     if not args.tiling and (args.tile_size is not None or args.tile_stride is not None):
         parser.error('--tile-size and --tile-stride require --tiling')
     if args.tiling:

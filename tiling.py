@@ -80,25 +80,26 @@ class TileLayout:
 def write_patient_tiles(destination, images, labels, layout):
     """Store image/label tiles and one valid mask per XY position (shared by Z).
 
-    images are normalized uint8; labels are unencoded integer classes 0..4.
+    images are normalized uint8; labels are integer classes 0..4 or None for test scans.
     Padding is zero in normalized intensity space, not an assumed HU value.
     """
-    if images.ndim != 3 or images.shape != labels.shape or images.shape[:2] != layout.shape:
+    if images.ndim != 3 or (labels is not None and images.shape != labels.shape) or images.shape[:2] != layout.shape:
         raise ValueError('Images and labels must match the 3D working grid')
-    if images.dtype != np.uint8 or not np.issubdtype(labels.dtype, np.integer):
+    if images.dtype != np.uint8 or (labels is not None and not np.issubdtype(labels.dtype, np.integer)):
         raise ValueError('Expected uint8 images and integer labels')
-    if images.shape[2] < 1 or not np.isin(labels, [0, 1, 2, 3, 4]).all():
+    if images.shape[2] < 1 or (labels is not None and not np.isin(labels, [0, 1, 2, 3, 4]).all()):
         raise ValueError('Expected nonempty Z and labels 0..4')
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
-    for folder in ('img', 'gt', 'valid'):
+    for folder in (('img', 'valid') if labels is None else ('img', 'gt', 'valid')):
         (destination / folder).mkdir()
     for index in range(len(layout.starts)):
         for z in range(images.shape[2]):
             image, valid = layout.extract(images[:, :, z], index)
-            label, _ = layout.extract(labels[:, :, z], index)
             name = f'z{z:04d}_t{index:04d}.png'
             Image.fromarray(image).save(destination / 'img' / name)
-            Image.fromarray((label * 63).astype(np.uint8)).save(destination / 'gt' / name)
+            if labels is not None:
+                label, _ = layout.extract(labels[:, :, z], index)
+                Image.fromarray((label * 63).astype(np.uint8)).save(destination / 'gt' / name)
             if z == 0:
                 Image.fromarray(valid.astype(np.uint8) * 255).save(destination / 'valid' / f't{index:04d}.png')

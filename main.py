@@ -709,7 +709,7 @@ def evaluate_tiled_checkpoint(args):
     params = datasets_params[args.dataset]
     if params['K'] != 5:
         raise ValueError('Tiled evaluation requires the five-class SegTHOR model')
-    dataset = build_dataset('val', args.data_root / args.dataset, tiling=True,
+    dataset = build_dataset(getattr(args, 'split', None) or 'val', args.data_root / args.dataset, tiling=True,
         img_transform=img_transform, gt_transform=partial(gt_transform, 5), slices=args.slices)
     if args.gpu:
         if torch.cuda.is_available():
@@ -725,7 +725,11 @@ def evaluate_tiled_checkpoint(args):
     state = torch.load(args.evaluate_checkpoint, map_location='cpu', weights_only=True)
     model.load_state_dict(state, strict=True)
     report = evaluate_model(model, dataset, args.dest, batch_size=params['B'], device=device)
-    print(f"Original-grid mean foreground Dice: {report['mean_foreground_dice']:.6f}")
+    if dataset.test_mode:
+        print(f"Saved predictions for {len(report['patients'])} test patients to {args.dest}")
+    else:
+        print(f"Original-grid mean foreground Dice: {report['mean_foreground_dice']:.6f}")
+    return report
 
 
 def main():
@@ -757,7 +761,9 @@ def main():
     parser.add_argument('--check-data', action='store_true',
                         help='Check train/val batches without training or writing results')
     parser.add_argument('--evaluate-checkpoint', type=Path,
-                        help='With --tiling: evaluate a state_dict on original CT grids for val')
+                        help='With --tiling: predict on original CT grids from a state_dict')
+    parser.add_argument('--split', choices=('val', 'test'),
+                        help='Checkpoint prediction split (default: val); test requires no labels')
     parser.add_argument('--check-loss', action='store_true',
                         help='With --tiling --check-data: check CE and gradients on diagnostic logits')
     parser.add_argument('--gpu', action='store_true')
@@ -766,6 +772,8 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.split is not None and not args.evaluate_checkpoint:
+        parser.error('--split requires --evaluate-checkpoint')
     if args.slices <= 0 or args.slices % 2 == 0:
         parser.error('--slices must be a positive odd integer (1 for 2D; 3, 5, ... for 2.5D)')
     if args.evaluate_checkpoint and (not args.tiling or args.check_data or args.check_loss):

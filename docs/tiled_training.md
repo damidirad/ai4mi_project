@@ -98,3 +98,33 @@ These are CPU synthetic tests, not a real SegTHOR/GPU training experiment or
 proof of segmentation improvement. The older test_simple_resampling.py suite
 still contains failures predating this work; see the CLI migration notes.
 No original data, remote branch or full training job is modified by these tests.
+
+## Predict unlabelled test scans
+
+Prepare `SOURCE/test/Patient_XX.nii.gz` using the metadata directory from the
+training dataset associated with the chosen checkpoint. This mode reads no
+training images or labels and reuses the saved HU window, target spacing and
+tile layout. Do not supply preprocessing overrides. The destination must be new.
+
+```bash
+python slice_segthor.py --source_dir SOURCE --dest_dir data/test_tiled/SEGTHOR \
+  --test-from-metadata data/tiled_xyz/SEGTHOR/train/metadata
+python main.py --dataset SEGTHOR --data_root data/test_tiled \
+  --dest results/test_predictions --tiling --split test --slices 3 \
+  --evaluate-checkpoint results/tiled_xyz/bestweights.pt --gpu
+```
+
+Use the same slice count as training. Weights do not encode the slice count or
+bind themselves to preprocessing metadata, so select the matching training run.
+The test preprocessing route is sequential. It writes images, validity masks
+and metadata without ground-truth tiles. An interrupted destination must be
+inspected and a new destination chosen before retrying.
+
+Predictions preserve the original CT grid and are exported as `Patient_XX.nii.gz`.
+The JSON report records patient IDs with null metrics because test labels are
+unavailable. Omitting `--split` keeps validation evaluation; explicit `--split`
+is only accepted with checkpoint evaluation. Submission packaging is separate.
+
+```bash
+PYTHONPATH=tests ai4mi/bin/python -m unittest test_tiled_test_route -v
+```
