@@ -332,9 +332,10 @@ def runTraining(args):
             case 'ce_dice':
                 loss_fn = CEDiceLoss(idk=idk, weights=weights)
             case 'boundary':
-                loss_fn = BoundaryLoss(idk=idk)
+                loss_fn = BoundaryLoss(idk=idk, include_background=args.boundary_include_background)
             case 'ce_dice_boundary':
-                loss_fn = CEDiceBoundaryLoss(idk=idk, weights=weights)
+                loss_fn = CEDiceBoundaryLoss(idk=idk, weights=weights,
+                                             include_background=args.boundary_include_background)
 
         # Notice one has the length of the _loader_, and the other one of the _dataset_
         log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
@@ -828,6 +829,8 @@ def main():
                         help='ce_dice_boundary: boundary weight added per epoch (weight = step * (epoch + 1))')
     parser.add_argument('--boundary-weight-max', default=1.0, type=float,
                         help='ce_dice_boundary: maximum boundary weight')
+    parser.add_argument('--boundary-include-background', action='store_true',
+                        help='Also apply the boundary loss to the background class (default: foreground only)')
     parser.add_argument('--original-grid-validation', action='store_true',
                         help='Select full-slice checkpoints using original-CT volume Dice (requires metadata)')
     parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw'],

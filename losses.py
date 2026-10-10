@@ -109,8 +109,12 @@ def one_hot2dist(seg: np.ndarray) -> np.ndarray:
 
 class BoundaryLoss():
     def __init__(self, **kwargs):
-        # foreground classes only to prevent the background to dominate the loss
-        self.idk = [k for k in kwargs['idk'] if k != 0]
+        # foreground classes only to prevent the background to dominate the loss,
+        # unless include_background is set (as in the official multi-class ACDC setup)
+        if kwargs.get('include_background', False):
+            self.idk = kwargs['idk']
+        else:
+            self.idk = [k for k in kwargs['idk'] if k != 0]
         print(f"Initialized {self.__class__.__name__} with {kwargs}, using classes {self.idk}")
 
     def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
@@ -136,7 +140,8 @@ class CEDiceBoundaryLoss():
     def __init__(self, **kwargs):
         self.ce = CrossEntropy(**kwargs)
         self.dice = DiceLoss(idk=kwargs['idk'])
-        self.boundary = BoundaryLoss(idk=kwargs['idk'])
+        self.boundary = BoundaryLoss(idk=kwargs['idk'],
+                                     include_background=kwargs.get('include_background', False))
         # weight of the boundary term is increased every epoch in main.py so the
         # region losses can first locate the organs
         self.boundary_weight = kwargs.get('boundary_weight', 1.0)
