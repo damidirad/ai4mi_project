@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import pickle
+import json
 import random
 import argparse
 import warnings
@@ -31,7 +32,6 @@ from functools import partial
 from multiprocessing import Pool
 from typing import Callable
 
-import nrrd  # pip install pynrrd
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import zoom
@@ -39,30 +39,41 @@ from skimage.io import imsave
 from skimage.transform import resize
 
 from utils import map_, tqdm_
+from geometry import grid_from_nifti
+from preprocessing_metadata import build_metadata, save_metadata, load_metadata
+from tiling import TileLayout, write_patient_tiles
 
 
-# Fixed mapping from segment name -> output label index
-CLASS_ORDER: dict[str, int] = {
-    "Background": 0,
-    "Heart": 1,
-    "Esophagus": 2,
-    "Trachea": 3,
-    "Aorta": 4,
-}
-NUM_CLASSES: int = len(CLASS_ORDER)
-LABEL_STEP: int = 255 // (NUM_CLASSES - 1)  # 63, matches the original encoding
-
-
-# Clip HU values to a soft-tissue/mediastinum window before rescaling to uint8
-HU_CLIP_MIN: float = -400.0
-HU_CLIP_MAX: float = 400.0
+HU_PERCENTILES: tuple[float, float] = (0.5, 99.5)
 
 
 def norm_arr(img: np.ndarray) -> np.ndarray:
-    clipped = np.clip(img.astype(np.float32), HU_CLIP_MIN, HU_CLIP_MAX)
-    res = 255 * (clipped - HU_CLIP_MIN) / (HU_CLIP_MAX - HU_CLIP_MIN)
+    casted = img.astype(np.float32)
+    shifted = casted - casted.min()
+    norm = shifted / shifted.max()
+    res = 255 * norm
 
     return res.astype(np.uint8)
+
+
+def hu_clipping(img: np.ndarray, hu_min: float, hu_max: float) -> np.ndarray:
+    clipped = np.clip(img.astype(np.float32), hu_min, hu_max)
+    res = 255 * (clipped - hu_min) / (hu_max - hu_min)
+
+    return res.astype(np.uint8)
+
+
+def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
+                    target_spacing: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:
+    factors = [s / t for s, t in zip(spacing, target_spacing)]
+    if len(target_spacing) == 2:  # Keep Z
+        factors.append(1.0)
+
+    kw = dict(mode="constant", prefilter=False, grid_mode=False)
+    res_ct = zoom(ct.astype(np.float32), factors, order=1, **kw)
+    res_gt = zoom(gt, factors, order=0, **kw)
+
+    return res_ct, res_gt
 
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
@@ -86,266 +97,123 @@ def sanity_gt(gt, ct) -> bool:
     assert gt.dtype in [np.uint8], gt.dtype
 
     # Do the test on 3d: assume all organs are present..
-    # assert set(np.unique(gt)) == set(range(NUM_CLASSES))
+    # assert set(np.unique(gt)) == set(range(5))
 
     return True
-
-
-def parse_segment_info(header: dict) -> dict[int, dict]:
-    """
-    Parse a .seg.nrrd header and return, for each SegmentN found:
-        {"name": str, "label_value": int, "layer": int}
-    Segments can appear in any order in the file — this just reads out
-    whatever metadata Slicer (or another tool) wrote for each one.
-    """
-    segments: dict[int, dict] = {}
-    i = 0
-    while f"Segment{i}_Name" in header or f"Segment{i}_ID" in header:
-        name = header.get(f"Segment{i}_Name", header.get(f"Segment{i}_ID", f"Segment_{i}"))
-        label_value = int(header.get(f"Segment{i}_LabelValue", 1))
-        layer = int(header.get(f"Segment{i}_Layer", 0))
-        segments[i] = {"name": name, "label_value": label_value, "layer": layer}
-        i += 1
-
-    assert segments, "No SegmentN_* metadata found in .seg.nrrd header"
-    return segments
-
-
-def build_gt_from_segnrrd(seg_path: Path, ct_shape: tuple[int, int, int]) -> np.ndarray:
-    """
-    Load a .seg.nrrd file and remap it to a single (X, Y, Z) uint8 volume
-    with values in range(NUM_CLASSES), using CLASS_ORDER for the mapping —
-    regardless of what order/label values the segments were saved with.
-
-    Handles two things Slicer commonly does that will silently corrupt
-    the labels if ignored:
-      1. Multiple segments can be packed into different binary "layers"
-         (an extra leading axis) sharing overlapping LabelValues.
-      2. The segmentation is often cropped to the bounding box of the
-         segmented structures, with an offset into the full CT volume
-         recorded in Segmentation_ReferenceImageExtentOffset.
-    """
-    data, header = nrrd.read(str(seg_path))
-    segments = parse_segment_info(header)
-
-    kinds = header.get("kinds", [])
-    if data.ndim == 4:
-        layer_axis = kinds.index("list") if "list" in kinds else 0
-        spatial_shape = tuple(s for i, s in enumerate(data.shape) if i != layer_axis)
-    else:
-        layer_axis = None
-        spatial_shape = data.shape
-
-    cropped_gt = np.zeros(spatial_shape, dtype=np.uint8)
-
-    seen_names = set()
-    for seg in segments.values():
-        name = seg["name"]
-        if name not in CLASS_ORDER:
-            raise ValueError(
-                f"Unknown segment name '{name}' in {seg_path}; "
-                f"expected one of {list(CLASS_ORDER)}"
-            )
-        seen_names.add(name)
-        out_val = CLASS_ORDER[name]
-
-        if layer_axis is not None:
-            layer_data = np.take(data, seg["layer"], axis=layer_axis)
-        else:
-            layer_data = data
-
-        mask = layer_data == seg["label_value"]
-        cropped_gt[mask] = out_val
-
-    # Sanity: warn (loudly) if a class from CLASS_ORDER other than Background
-    # is missing from this particular file.
-    missing = set(CLASS_ORDER) - seen_names - {"Background"}
-    if missing:
-        warnings.warn(f"{seg_path}: missing expected segment(s) {missing}")
-
-    # Undo the bounding-box crop, if any, so the GT lines up with the full CT.
-    offset_str = header.get("Segmentation_ReferenceImageExtentOffset", "0 0 0")
-    offset = tuple(int(v) for v in offset_str.split())
-
-    if cropped_gt.shape == ct_shape and offset == (0, 0, 0):
-        return cropped_gt
-
-    full_gt = np.zeros(ct_shape, dtype=np.uint8)
-    slices = tuple(slice(o, o + s) for o, s in zip(offset, cropped_gt.shape))
-    full_gt[slices] = cropped_gt
-    return full_gt
 
 
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
-def resample_voxels(ct: np.ndarray, gt: np.ndarray, spacing: tuple[float, float, float],
-    target_spacing: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
-    if ct.ndim != 3 or gt.ndim != 3:
-        raise ValueError("CT and labels must both be 3D arrays")
-
-    if ct.shape != gt.shape:
-        raise ValueError(
-            f"CT and labels must have the same shape: {ct.shape} != {gt.shape}"
-        )
-
-    if any(size == 0 for size in ct.shape):
-        raise ValueError("CT and labels must have non-empty spatial dimensions")
-
-    dx, dy, _ = validate_spacing(
-        spacing,
-        dimensions=3,
-        name="Source spacing",
-    )
-    target_dx, target_dy = validate_spacing(
-        target_spacing,
-        dimensions=2,
-        name="Target X/Y spacing",
-    )
-
-    # Share the X/Y geometry; a factor of 1 leaves Z unchanged.
-    zoom_factors = (dx / target_dx, dy / target_dy, 1.0)
-
-    # Float32 preserves fractional CT values during linear interpolation.
-    # Both calls use the same boundary and coordinate settings:
-    # constant: fill outside the input with zero.
-    # grid_mode=False: measure coordinates between voxel centers.
-    # Orders 0 and 1 do not need spline prefiltering.
-    res_ct = zoom(
-        ct.astype(np.float32, copy=False),
-        zoom_factors,
-        order=1,
-        mode="constant",
-        cval=0.0,
-        prefilter=False,
-        grid_mode=False,
-    )
-
-    res_gt = zoom(
-        gt,
-        zoom_factors,
-        order=0,
-        mode="constant",
-        cval=0,
-        prefilter=False,
-        grid_mode=False,
-    )
-
-    return res_ct, res_gt
-
-
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False, resample: bool = False,
-                  target_spacing: tuple[float, float] | None = None) -> tuple[float, float, float]:
+                  test_mode: bool = False, target_spacing: tuple[float, ...] | None = None,
+                  hu_window: tuple[float, float] | None = None,
+                  save_geometry: bool = False,
+                  tiling: bool = False, tile_size=(256, 256), tile_stride=(128, 128)) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
     nib_obj = nib.load(str(ct_path))
     ct: np.ndarray = np.asarray(nib_obj.dataobj)
-    # dx, dy, dz = nib_obj.header.get_zooms()
-    x, y, z = ct.shape
     dx, dy, dz = nib_obj.header.get_zooms()
-
-    if resample:
-        validate_spacing(
-            (dx, dy, dz),
-            dimensions=3,
-            name=f"Source spacing for {id_}",
-        )
-
-        if target_spacing is None:
-            raise ValueError("Target X/Y spacing is required when resampling")
-
-        target_dx, target_dy = validate_spacing(
-            target_spacing,
-            dimensions=2,
-            name="Target X/Y spacing",
-        )
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
+    save_geometry = save_geometry or tiling
+    original_grid = None
+    if save_geometry:
+        if nib_obj.header.get_xyzt_units()[0] != 'mm':
+            raise ValueError('Metadata export requires CT units in mm for the current resampler')
+        original_grid = grid_from_nifti(nib_obj)
+        if not np.allclose(original_grid.spacing, (dx, dy, dz), rtol=1e-6, atol=1e-8):
+            raise ValueError('CT affine and header spacing disagree')
+
     gt: np.ndarray
     if not test_mode:
-        seg_candidates = list(id_path.glob("*.seg.nrrd"))
-        assert len(seg_candidates) == 1, f"Expected exactly one .seg.nrrd in {id_path}, found {seg_candidates}"
-        gt_path: Path = seg_candidates[0]
-        gt = build_gt_from_segnrrd(gt_path, ct.shape)
+        gt_obj = nib.load(str(id_path / "GT.nii.gz"))
+        gt = np.asarray(gt_obj.dataobj)
+        if save_geometry:
+            gt_grid = grid_from_nifti(gt_obj)
+            if gt_grid.shape != original_grid.shape or not np.allclose(
+                    gt_grid.affine, original_grid.affine, rtol=0, atol=1e-5):
+                raise ValueError('CT and labels must share the same physical grid')
         assert sanity_gt(gt, ct)
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    if resample:
-        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), (target_dx, target_dy))
+    if target_spacing is not None:
+        ct, gt = resample_voxels(ct, gt, (dx, dy, dz), target_spacing)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+        dx = target_spacing[0]
+        dy = target_spacing[1]
 
-    to_slice_ct = norm_ct
-    to_slice_gt = gt
+        if len(target_spacing) == 3:
+            dz = target_spacing[2]
 
-    for idz in range(z):
-        img_slice = resize_(to_slice_ct[:, :, idz], shape).astype(np.uint8)
-        gt_slice = resize_(to_slice_gt[:, :, idz], shape, order=0).astype(np.uint8)
+    layout = TileLayout(ct.shape[:2], tile_size, tile_stride) if tiling else None
+    metadata = None
+    if save_geometry:
+        metadata = build_metadata(id_, dest_path.name, ct_path, original_grid,
+                                  ct.shape, target_spacing, ct.shape[:2] if tiling else shape, hu_window,
+                                  source_spacing=nib_obj.header.get_zooms(), tile_layout=layout)
+
+    if tiling:
+        norm_ct = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
+        write_patient_tiles(dest_path / 'tiles' / id_, norm_ct, None if test_mode else gt, layout)
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
+        return tuple(np.linalg.norm(np.asarray(metadata['working']['affine_ras_mm'])[:3, :3], axis=0))
+
+    orig_x, orig_y = ct.shape[:2]
+
+    dx = dx * orig_x / shape[0]
+    dy = dy * orig_y / shape[1]
+
+    norm_ct: np.ndarray = norm_arr(ct) if hu_window is None else hu_clipping(ct, *hu_window)
+
+    for idz in range(norm_ct.shape[2]):
+        img_slice = resize_(norm_ct[:, :, idz], shape).astype(np.uint8)
+        gt_slice = resize_(gt[:, :, idz], shape, order=0).astype(np.uint8)
         assert img_slice.shape == gt_slice.shape
-        gt_slice *= LABEL_STEP
+        gt_slice *= 63
         assert gt_slice.dtype == np.uint8, gt_slice.dtype
-        # assert set(np.unique(gt_slice)) <= set(range(NUM_CLASSES))
-        assert set(np.unique(gt_slice)) <= set(range(0, 256, LABEL_STEP)), np.unique(gt_slice)
+        assert set(np.unique(gt_slice)) <= set([0, 63, 126, 189, 252]), np.unique(gt_slice)
 
-        arrays: list[np.ndarray] = [img_slice, gt_slice]
-
-        subfolders: list[str] = ["img", "gt"]
-        assert len(arrays) == len(subfolders)
-        for save_subfolder, data in zip(subfolders,
-                                        arrays):
-            filename = f"{id_}_{idz:04d}.png"
-
+        for save_subfolder, data in zip(["img", "gt"], [img_slice, gt_slice]):
             save_path: Path = Path(dest_path, save_subfolder)
             save_path.mkdir(parents=True, exist_ok=True)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
-                imsave(str(save_path / filename), data)
+                imsave(str(save_path / f"{id_}_{idz:04d}.png"), data)
+
+    if metadata is not None:
+        save_metadata(dest_path / 'metadata' / f'{id_}.json', metadata)
 
     return dx, dy, dz
 
 
-def validate_spacing(spacing, *, dimensions: int, name: str) -> tuple[float, ...]:
-    values = np.asarray(spacing, dtype=np.float64)
+def median_spacing(ids: list[str], src_path: Path, dims: int) -> tuple[float, ...]:
+    spacings = [nib.load(str(src_path / "train" / id_ / f"{id_}.nii.gz")).header.get_zooms()[:dims]
+                for id_ in ids]
 
-    if values.shape != (dimensions,):
-        raise ValueError(f"{name} must contain {dimensions} values")
-
-    if not np.all(np.isfinite(values)) or np.any(values <= 0):
-        raise ValueError(f"{name} must contain only finite, positive values")
-
-    return tuple(float(value) for value in values)
+    return tuple(float(s) for s in np.median(spacings, axis=0))
 
 
-def compute_median_spacing(ids: list[str], src_path: Path) -> tuple[float, float]:
-    if not ids:
-        raise ValueError("Cannot compute target spacing from an empty training set")
-
-    spacings = []
+def hu_window(ids: list[str], src_path: Path) -> tuple[float, float]:
+    values = []
     for id_ in ids:
-        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
-        spacing = validate_spacing(
-            nib.load(str(ct_path)).header.get_zooms(),
-            dimensions=3,
-            name=f"Source spacing for {id_}",
-        )
-        spacings.append(spacing[:2])
+        id_path = src_path / "train" / id_
+        ct = np.asarray(nib.load(str(id_path / f"{id_}.nii.gz")).dataobj)
+        gt = np.asarray(nib.load(str(id_path / "GT.nii.gz")).dataobj)
+        values.append(ct[gt > 0])
 
-    median_xy = np.median(np.asarray(spacings), axis=0)
-    target_dx, target_dy = validate_spacing(
-        median_xy,
-        dimensions=2,
-        name="Training-set target spacing",
-    )
-    return target_dx, target_dy
+    hu_min, hu_max = np.percentile(np.concatenate(values), HU_PERCENTILES)
+
+    return float(hu_min), float(hu_max)
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
-    ids: list[str] = sorted(map_(lambda p: p.name, (src_path / 'train').glob('*')))
+    ids: list[str] = sorted(map_(lambda p: p.name, (src_path / 'train').glob('Patient_*')))
     print(f"Founds {len(ids)} in the id list")
     print(ids[:10])
     assert len(ids) > retains
@@ -358,14 +226,47 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
     training_ids: list[str] = [e for e in ids if e not in validation_ids]
     assert (len(training_ids) + len(validation_ids)) == len(ids)
 
-    test_ids: list[str] = sorted(map_(lambda p: Path(p.stem).stem, (src_path / 'test').glob('*')))
+    test_ids: list[str] = sorted(map_(lambda p: Path(p.stem).stem, (src_path / 'test').glob('*.nii.gz')))
     print(f"Founds {len(test_ids)} test ids")
     print(test_ids[:10])
 
     return training_ids, validation_ids, test_ids
 
 
+def prepare_test_tiles(args):
+    """Prepare unlabelled scans using settings saved with the training tiles."""
+    paths = sorted(Path(args.test_from_metadata).glob('*.json'))
+    if not paths:
+        raise ValueError('No training metadata found')
+    records = [load_metadata(path) for path in paths]
+    signatures = set()
+    for record in records:
+        if record['schema_version'] != 2 or record['split'] != 'train':
+            raise ValueError('Expected tiled training metadata')
+        signatures.add(json.dumps({key: record[key] for key in
+            ('resample', 'requested_spacing_mm', 'intensity', 'interpolation')} |
+            {'size': record['tiling']['size'], 'stride': record['tiling']['stride']}, sort_keys=True))
+    if len(signatures) != 1:
+        raise ValueError('Training metadata has inconsistent preprocessing settings')
+    record = records[0]
+    source = Path(args.source_dir)
+    scans = sorted((source / 'test').glob('*.nii.gz'))
+    if not scans:
+        raise ValueError('Expected unlabelled scans in source_dir/test/*.nii.gz')
+    destination = Path(args.dest_dir)
+    if destination.exists():
+        raise FileExistsError('Test preprocessing requires a new destination')
+    for scan in scans:
+        pid = scan.name[:-7]
+        slice_patient(pid, destination / 'test', source, (256, 256),
+                      test_mode=True, target_spacing=record['requested_spacing_mm'],
+                      hu_window=record['intensity']['window'], tiling=True,
+                      tile_size=record['tiling']['size'], tile_stride=record['tiling']['stride'])
+
+
 def main(args: argparse.Namespace):
+    if getattr(args, 'test_from_metadata', None):
+        return prepare_test_tiles(args)
     src_path: Path = Path(args.source_dir)
     dest_path: Path = Path(args.dest_dir)
 
@@ -373,30 +274,17 @@ def main(args: argparse.Namespace):
     assert src_path.exists()
     assert not dest_path.exists()
 
-    training_ids: list[str]
-    validation_ids: list[str]
-    test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
-    target_spacing: tuple[float, float] | None = None
+    window = hu_window(training_ids, src_path) if args.hu_clip else None
+    print(f"HU window: {window}")
 
-    if args.resample:
-        if args.target_spacing is not None:
-            target_dx, target_dy = validate_spacing(
-                args.target_spacing,
-                dimensions=2,
-                name="Manual target X/Y spacing",
-            )
-            target_spacing = (target_dx, target_dy)
-            spacing_source = "manual override"
-        else:
-            target_spacing = compute_median_spacing(training_ids, src_path)
-            spacing_source = "training-set median"
-
-        print(
-            f"Resampling X/Y to {target_spacing} mm "
-            f"({spacing_source}); Z spacing unchanged"
-        )
+    target_spacing = None
+    if args.resample != "none":
+        dims = 3 if args.resample == "xyz" else 2
+        target_spacing = tuple(args.target_spacing) if args.target_spacing else median_spacing(training_ids, src_path, dims)
+        assert len(target_spacing) == dims, target_spacing
+    print(f"Target spacing: {target_spacing}")
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
@@ -410,8 +298,12 @@ def main(args: argparse.Namespace):
                                  source_path=src_path,
                                  shape=tuple(args.shape),
                                  test_mode=mode == 'test',
-                                 resample=args.resample,
-                                 target_spacing=target_spacing)
+                                 target_spacing=target_spacing,
+                                 hu_window=window,
+                                 save_geometry=getattr(args, 'save_metadata', False),
+                                 tiling=getattr(args, 'tiling', False),
+                                 tile_size=getattr(args, 'tile_size', None) or (256, 256),
+                                 tile_stride=getattr(args, 'tile_stride', None) or (128, 128))
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -435,21 +327,50 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--source_dir', type=str, required=True)
     parser.add_argument('--dest_dir', type=str, required=True)
 
+    parser.add_argument('--test-from-metadata', type=Path,
+                        help='Prepare test scans only, reusing a tiled train/metadata directory')
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
-    parser.add_argument('--resample', action='store_true', help="Resample CT/GT in X/Y before slicing; preserve Z.")
-    parser.add_argument('--target_spacing', type=float, nargs=2, metavar=('DX', 'DY'), default=None,
-        help=(
-            "Manual target X/Y spacing in mm, used with --resample. "
-            "Values must be finite and positive. "
-            "Defaults to the median X/Y spacing of the training split."
-        ),
-    )
+    parser.add_argument('--tiling', action='store_true',
+                        help='Extract XY tiles instead of resizing slices; always saves metadata')
+    parser.add_argument('--tile-size', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile dimensions (default with --tiling: 256 256)')
+    parser.add_argument('--tile-stride', type=int, nargs=2, default=None, metavar=('X', 'Y'),
+                        help='Tile step (default with --tiling: 128 128)')
+    parser.add_argument('--save_metadata', action='store_true',
+                        help='Save validated per-patient geometry and preprocessing JSON')
+    parser.add_argument('--hu_clip', action='store_true', help="Clip HU to training-set organ percentiles")
+    parser.add_argument('--resample', choices=('none', 'xy', 'xyz'), default='none',
+                        help="Voxel resampling: none (default), xy (preserve Z), or xyz")
+    parser.add_argument('--target_spacing', type=float, nargs="+", default=None,
+                        help="Spacing in mm: DX DY for xy, DX DY DZ for xyz; defaults to training-set medians")
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
+    if args.test_from_metadata:
+        if (args.tiling or args.hu_clip or args.resample != 'none' or
+                args.target_spacing is not None or args.tile_size is not None or
+                args.tile_stride is not None or args.shape != [256, 256]):
+            parser.error('--test-from-metadata supplies all preprocessing settings; omit overrides')
+    if not args.tiling and (args.tile_size is not None or args.tile_stride is not None):
+        parser.error('--tile-size and --tile-stride require --tiling')
+    if args.tiling:
+        try:
+            TileLayout((1, 1), args.tile_size or (256, 256), args.tile_stride or (128, 128))
+        except ValueError as error:
+            parser.error(str(error))
+        if args.shape != [256, 256]:
+            parser.error('--shape applies to full slices; use --tile-size with --tiling')
+    if args.target_spacing is not None:
+        if args.resample == 'none':
+            parser.error('--target_spacing requires --resample xy or --resample xyz')
+        dims = 3 if args.resample == 'xyz' else 2
+        if len(args.target_spacing) != dims:
+            parser.error(f'--resample {args.resample} requires {dims} values for --target_spacing')
+        if not all(np.isfinite(value) and value > 0 for value in args.target_spacing):
+            parser.error('--target_spacing values must be finite and positive')
     random.seed(args.seed)
 
     print(args)
