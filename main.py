@@ -337,6 +337,11 @@ def runTraining(args):
         log_lr[e] = optimizer.param_groups[0]['lr']
         print(f">> Learning rate for epoch {e}: {log_lr[e]:.2e}")
 
+        if args.loss == 'ce_dice_boundary':
+            # grows by a fixed step per epoch, independent of the total number of epochs
+            loss_fn.boundary_weight = min(args.boundary_weight_step * (e + 1), args.boundary_weight_max)
+            print(f">> Boundary weight for epoch {e}: {loss_fn.boundary_weight:.3f}")
+
 
         tile_losses = {}
         for m in ['train', 'val']:
@@ -799,6 +804,10 @@ def main():
 
     parser.add_argument('--class-weighting', choices=('none', 'inverse_frequency'), default='inverse_frequency',
                         help='Use none to reproduce the original unweighted CE objective')
+    parser.add_argument('--boundary-weight-step', default=0.01, type=float,
+                        help='ce_dice_boundary: boundary weight added per epoch (weight = step * (epoch + 1))')
+    parser.add_argument('--boundary-weight-max', default=1.0, type=float,
+                        help='ce_dice_boundary: maximum boundary weight')
     parser.add_argument('--original-grid-validation', action='store_true',
                         help='Select full-slice checkpoints using original-CT volume Dice (requires metadata)')
     parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw'],
@@ -825,6 +834,8 @@ def main():
         parser.error('--split requires --evaluate-checkpoint')
     if args.slices <= 0 or args.slices % 2 == 0:
         parser.error('--slices must be a positive odd integer (1 for 2D; 3, 5, ... for 2.5D)')
+    if args.boundary_weight_step <= 0 or args.boundary_weight_max <= 0:
+        parser.error('--boundary-weight-step and --boundary-weight-max must be positive')
     if args.evaluate_checkpoint and (args.check_data or args.check_loss):
         parser.error('--evaluate-checkpoint cannot combine with check modes')
     if args.check_loss and not (args.tiling and args.check_data):

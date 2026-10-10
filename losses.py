@@ -109,8 +109,9 @@ def one_hot2dist(seg: np.ndarray) -> np.ndarray:
 
 class BoundaryLoss():
     def __init__(self, **kwargs):
-        self.idk = kwargs['idk']
-        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+        # foreground classes only to prevent the background to dominate the loss
+        self.idk = [k for k in kwargs['idk'] if k != 0]
+        print(f"Initialized {self.__class__.__name__} with {kwargs}, using classes {self.idk}")
 
     def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
         assert pred_softmax.shape == weak_target.shape
@@ -136,12 +137,15 @@ class CEDiceBoundaryLoss():
         self.ce = CrossEntropy(**kwargs)
         self.dice = DiceLoss(idk=kwargs['idk'])
         self.boundary = BoundaryLoss(idk=kwargs['idk'])
+        # weight of the boundary term is increased every epoch in main.py so the
+        # region losses can first locate the organs
+        self.boundary_weight = kwargs.get('boundary_weight', 1.0)
         print(f"Initialized {self.__class__.__name__}")
 
     def __call__(self, pred_softmax, weak_target):
         return (self.ce(pred_softmax, weak_target)
                + self.dice(pred_softmax, weak_target)
-               + self.boundary(pred_softmax, weak_target))
+               + self.boundary_weight * self.boundary(pred_softmax, weak_target))
 
 
 def validate_tiled_loss(name):
