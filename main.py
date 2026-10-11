@@ -67,6 +67,8 @@ datasets_params: dict[str, dict[str, Any]] = {}
 # Avoids the classes with C (often used for the number of Channel)
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet_2_5d, 'B': 8, 'kernels': 8, 'factor': 2}
+# Legacy HU-preprocessed directory used by the Makefile and experiment runner.
+datasets_params["SEGTHOR_hu"] = datasets_params["SEGTHOR"].copy()
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet_2_5d, 'B': 8, 'kernels': 8, 'factor': 2}
 
 def img_transform(img, augmentation=None):
@@ -217,7 +219,7 @@ def _setup_tiled_training(args):
         raise ValueError('Tiled training requires the five-class SegTHOR configuration')
     if args.mode == 'full':
         supervised = list(range(5))
-    elif args.mode == 'partial' and args.dataset == 'SEGTHOR':
+    elif args.mode == 'partial' and args.dataset in ('SEGTHOR', 'SEGTHOR_hu'):
         supervised = [0, 1, 3, 4]
     else:
         raise ValueError('Unsupported tiled supervision mode')
@@ -316,7 +318,7 @@ def runTraining(args):
 
         if args.mode == "full":
             idk = list(range(K))  # Supervise both background and foreground
-        elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
+        elif args.mode in ["partial"] and args.dataset in ('SEGTHOR', 'SEGTHOR_hu'):
             idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
         else:
             raise ValueError(args.mode, args.dataset)
@@ -719,7 +721,7 @@ def check_data(args):
         validate_tiled_loss(args.loss)
         if args.mode == 'full':
             idk = list(range(K))
-        elif args.mode == 'partial' and args.dataset == 'SEGTHOR':
+        elif args.mode == 'partial' and args.dataset in ('SEGTHOR', 'SEGTHOR_hu'):
             idk = [0, 1, 3, 4]
         else:
             raise ValueError('Unsupported tiled supervision mode')
