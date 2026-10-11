@@ -272,6 +272,29 @@ def _setup_tiled_training(args):
     return model, optimizer, device, loader, val_loader, 5, weights, criterion, val_criterion
 
 
+def patient_metric_report(gt, pred, dice, hd95, surface_distance):
+    report = {}
+    for k in range(1, gt.shape[1]):
+        has_gt, has_pred = bool(gt[:, k].any()), bool(pred[:, k].any())
+        status = ('both_empty' if not has_gt and not has_pred else
+                  'target_empty' if not has_gt else
+                  'prediction_empty' if not has_pred else 'ok')
+        report[str(k)] = {
+            'dice': float(dice[0, k]),
+            'hd95_mm': float(hd95[0, k]) if torch.isfinite(hd95[0, k]) else None,
+            'assd_mm': float(surface_distance[0, k]) if torch.isfinite(surface_distance[0, k]) else None,
+            'status': status,
+        }
+    return report
+
+
+def distance_summary(scores):
+    foreground = scores[:, 1:]
+    undefined = int((~torch.isfinite(foreground)).sum())
+    return {'mean_mm': None if undefined else float(foreground.mean()),
+            'undefined_count': undefined, 'total_count': foreground.numel()}
+
+
 def runTraining(args):
     tiling = getattr(args, 'tiling', False)
     if tiling:
@@ -500,6 +523,7 @@ def runTraining(args):
 
         if m == 'val':
             dice_3d_scores = []
+            patient_reports = {}
 
             for patient_id in sorted(patient_preds):
                 slice_ids = sorted(patient_preds[patient_id])
@@ -565,6 +589,11 @@ def runTraining(args):
                 patient_dice = dice_3d(gt_volume, pred_volume)
                 patient_hd95 = hausdorff95(gt_volume, pred_volume, spacing=spacing)
                 patient_assd = assd(gt_volume, pred_volume, spacing=spacing)
+                patient_reports[patient_id] = patient_metric_report(
+                    gt_volume, pred_volume, patient_dice, patient_hd95, patient_assd)
+                for class_id, metric in patient_reports[patient_id].items():
+                    if metric['status'] in ('prediction_empty', 'target_empty'):
+                        print(f">>> Undefined HD95/ASSD: {patient_id}, class {class_id}: {metric['status']}")
                 if args.debug and patient_id == sorted(patient_preds)[0]:
                     print(
                         f">>> DEBUG metrics {patient_id}: "
@@ -616,14 +645,20 @@ def runTraining(args):
                     f"{assd_scores[:, 1:].numel()}"
                 )
 
-            finite_hd95 = hd95_scores[:, 1:][torch.isfinite(hd95_scores[:, 1:])]
-            finite_assd = assd_scores[:, 1:][torch.isfinite(assd_scores[:, 1:])]
-
-            mean_hd95 = finite_hd95.mean().item()
-            mean_assd = finite_assd.mean().item()
-
-            log_h95_val[e] = mean_hd95
-            log_assd_val[e] = mean_assd
+            hd95_summary = distance_summary(hd95_scores)
+            assd_summary = distance_summary(assd_scores)
+            # NumPy histories use NaN for undefined means; JSON uses null.
+            mean_hd95 = hd95_summary['mean_mm']
+            mean_assd = assd_summary['mean_mm']
+            log_h95_val[e] = float('nan') if mean_hd95 is None else mean_hd95
+            log_assd_val[e] = float('nan') if mean_assd is None else mean_assd
+            _write_training_json(args.dest / f"iter{e:03d}" / 'metrics.json', {
+                'grid': 'prepared_volume', 'patients': patient_reports,
+                'mean_foreground_dice': current_dice,
+                'hd95': hd95_summary, 'assd': assd_summary,
+            })
+            hd95_text = ('undefined' if mean_hd95 is None else f'{mean_hd95:.2f} mm')
+            assd_text = ('undefined' if mean_assd is None else f'{mean_assd:.2f} mm')
 
             if args.debug:
                 print(f"\n>>> DEBUG SUMMARY epoch {e}")
@@ -643,8 +678,8 @@ def runTraining(args):
             print(
                 f">>> 3D metrics at epoch {e}: "
                 f"3D Dice={current_dice:05.3f}, "
-                f"HD95={mean_hd95:05.2f} mm, "
-                f"ASSD={mean_assd:05.2f} mm"
+                f"HD95={hd95_text} ({hd95_summary['undefined_count']}/{hd95_summary['total_count']} undefined), "
+                f"ASSD={assd_text} ({assd_summary['undefined_count']}/{assd_summary['total_count']} undefined)"
             )
 
         if scheduler is not None:

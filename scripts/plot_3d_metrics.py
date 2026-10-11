@@ -77,7 +77,8 @@ def calculate_statistics(metrics):
         means: (epochs, classes)
         stds:  (epochs, classes)
 
-    NaN and inf values are ignored.
+    Any NaN/inf makes that epoch/class mean and SD undefined (NaN).
+    Zero distances, including correctly absent organs, remain valid values.
     """
 
     n_epochs = metrics.shape[0]
@@ -100,18 +101,10 @@ def calculate_statistics(metrics):
 
             values = metrics[epoch_idx, :, class_idx]
 
-            # Ignore inf/nan values.
-            finite_values = values[np.isfinite(values)]
-
-            if finite_values.size > 0:
-                means[epoch_idx, class_idx] = finite_values.mean()
-
-            if finite_values.size > 1:
-                stds[epoch_idx, class_idx] = finite_values.std(
-                    ddof=1
-                )
-            elif finite_values.size == 1:
-                stds[epoch_idx, class_idx] = 0.0
+            if values.size == 0 or not np.isfinite(values).all():
+                continue
+            means[epoch_idx, class_idx] = values.mean()
+            stds[epoch_idx, class_idx] = values.std(ddof=1) if values.size > 1 else 0.0
 
     return means, stds
 
@@ -161,7 +154,12 @@ def plot_all_classes(
     ax.grid(True, alpha=0.3)
     ax.legend()
 
-    fig.tight_layout()
+    if not np.isfinite(means[:, 1:]).all():
+        fig.text(0.5, 0.01, 'Gaps indicate undefined means; no patients are excluded.',
+                 ha='center', fontsize=9)
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+    else:
+        fig.tight_layout()
 
     if dest is not None:
         fig.savefig(
@@ -234,7 +232,12 @@ def plot_separate_classes(
         fontsize=14,
     )
 
-    fig.tight_layout()
+    if not np.isfinite(means[:, 1:]).all():
+        fig.text(0.5, 0.01, 'Gaps indicate undefined means; no patients are excluded.',
+                 ha='center', fontsize=9)
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+    else:
+        fig.tight_layout()
 
     if dest is not None:
         separate_dest = dest.with_name(
@@ -277,13 +280,13 @@ def run(args: argparse.Namespace) -> None:
         values = means[epoch_idx]
         deviations = stds[epoch_idx]
 
-        print(
-            f"{epoch:>8} "
-            f"{values[1]:.4f} ± {deviations[1]:.4f}   "
-            f"{values[2]:.4f} ± {deviations[2]:.4f}   "
-            f"{values[3]:.4f} ± {deviations[3]:.4f}   "
-            f"{values[4]:.4f} ± {deviations[4]:.4f}"
-        )
+        cells = []
+        for class_idx in range(1, 5):
+            raw = metrics[epoch_idx, :, class_idx]
+            undefined = int((~np.isfinite(raw)).sum())
+            cells.append(f"undefined ({undefined}/{raw.size})" if undefined else
+                         f"{values[class_idx]:.4f} ± {deviations[class_idx]:.4f}")
+        print(f"{epoch:>8} " + '   '.join(cells))
 
     # ---------------------------------------------------------
     # Combined plot
