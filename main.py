@@ -60,6 +60,7 @@ from utils import (Dcm,
                    assd)
 
 from losses import (CrossEntropy, DiceLoss, CEDiceLoss, BoundaryLoss, CEDiceBoundaryLoss)
+from PIL import Image
 import pickle
 
 datasets_params: dict[str, dict[str, Any]] = {}
@@ -147,12 +148,13 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     weights = None
     if getattr(args, 'class_weighting', 'inverse_frequency') != 'none':
-        # Calculate class frequencies from the training ground truth
+        # Count the stored training labels directly, without augmentation or
+        # consuming the shuffled loader. Respect the selected debug subset.
         class_counts = torch.zeros(K, dtype=torch.float64)
-
-        for data in train_loader:
-            gt = data['gts']  # [B, K, W, H]
-            class_counts += gt.sum(dim=(0, 2, 3)).double()
+        for _, label_path in train_set.files:
+            with Image.open(label_path) as label:
+                gt = gt_transform(K, label)
+            class_counts += gt.sum(dim=(1, 2)).double()
 
         class_freq = class_counts / class_counts.sum()
 
