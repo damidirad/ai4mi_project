@@ -23,11 +23,12 @@
     - [Viewer on Windows](#viewer-on-windows)
 - [Improvements and additions](#improvements-and-additions)
     - [Additional pre-processing](#additional-pre-processing)
+    - [Data augmentation](#data-augmentation)
     - [2.5D network](#25d-network)
     - [Different optimizer](#different-optimizer)
     - [Different loss functions](#different-loss-functions)
-    - [Further extension: tiled training](#further-extension-tiled-training)
     - [Additional evaluation metrics](#additional-evaluation-metrics)
+    - [Further extension: tiled training](#further-extension-tiled-training)
 
 <!-- /MarkdownTOC -->
 
@@ -324,15 +325,19 @@ Windows has different paths names (`\` in stead of `/`), so the default regex in
 
 <a id="improvements-and-additions"></a>
 ## Improvements and additions
-The assignment asks us to investigate at least five extension ideas, without requiring all of them in the final model. The overview below groups our implemented extensions by the relevant assignment categories. It describes the available functionality; experiment results and the final model choice are documented separately.
+The assignment asks us to investigate at least five extension ideas, without requiring all of them in the final model. The overview below groups our implemented extensions by the relevant assignment categories. It describes the available functionality rather than claiming that every option improves the final model. (((Experiment configurations and workflows are described in [experiments/README.md](experiments/README.md)))).
 
 <a id="additional-pre-processing"></a>
 ### Additional pre-processing
-HU clipping restricts CT intensities to a chosen window before normalisation. Optional voxel resampling makes scan spacing consistent: `xy` resamples within slices, while `xyz` resamples all three axes. Target spacing can be specified explicitly or derived from the training-set median. Both are implemented in [slice_segthor.py](slice_segthor.py); see [resampling](docs/resampling.md) for details.
+HU clipping restricts CT intensities to a chosen window before normalisation. Optional voxel resampling makes scan spacing consistent: `xy` resamples within slices, while `xyz` resamples all three axes. Target spacing can be specified explicitly or derived from the training-set median; see [resampling](docs/resampling.md) for details.
+
+<a id="data-augmentation"></a>
+### Data augmentation
+Full-slice training supports online random rotation, translation and scaling through `--augmentation mild` or `strong`. Each 2D image or 2.5D slice stack shares one transformation with its centre-slice label, preserving alignment. Images use bilinear interpolation and labels use nearest-neighbour interpolation. Validation and inference are not augmented. The implementation is in [data_augmentation.py](data_augmentation.py); tiled training deliberately excludes augmentation.
 
 <a id="25d-network"></a>
 ### 2.5D network
-The [2.5D ENet](ENet_2_5d.py) uses neighbouring slices as input channels to provide context when segmenting the centre slice. It plugs into the existing training script: `--slices 3` selects three-slice input, while `--slices 1` keeps the original 2D setup.
+The [2.5D ENet](ENet_2_5d.py) uses neighbouring slices as input channels to provide context when segmenting the centre slice. It plugs into the existing training script: `--slices 3` selects three-slice input, while `--slices 1` selects the original 2D ENet for SegTHOR. The same selection applies during training and checkpoint evaluation, keeping the original architecture available as the baseline.
 
 <a id="different-optimizer"></a>
 ### Different optimizer
@@ -340,12 +345,12 @@ AdamW provides an alternative to the original Adam optimizer with decoupled weig
 
 <a id="different-loss-functions"></a>
 ### Different loss functions
-Dice loss targets segmentation overlap, while Boundary loss uses distances to the ground-truth boundary. The CE + Dice and CE + Dice + Boundary combinations bring these objectives together. Cross-entropy also supports class weighting to account for class imbalance. The implementations are in [losses.py](losses.py), with loss selection through `main.py --loss`.
+Dice loss targets segmentation overlap, while Boundary loss uses distances to the ground-truth boundary. The CE + Dice and CE + Dice + Boundary combinations bring these objectives together. In the combined CE + Dice + Boundary loss, the boundary weight increases each epoch up to a configurable maximum, allowing the region losses to guide early training. Boundary loss uses foreground classes by default, with optional background inclusion through `--boundary-include-background`. Cross-entropy also supports optional class weighting to account for class imbalance. The implementations are in [losses.py](losses.py), with loss selection through `main.py --loss`.
 
 <a id="additional-evaluation-metrics"></a>
 ### Additional evaluation metrics
-To evaluate these extensions, volumetric 3D Dice, 95th-percentile Hausdorff distance (HD95), and Average Symmetric Surface Distance (ASSD) complement the original per-slice Dice score. They measure volume overlap and boundary accuracy per patient and class. Implementations are in [utils.py](utils.py), with plotting support in [scripts/plot_3d_metrics.py](scripts/plot_3d_metrics.py).
+To evaluate these extensions, volumetric 3D Dice, 95th-percentile Hausdorff distance (HD95), and Average Symmetric Surface Distance (ASSD) complement the original per-slice Dice score. They measure volume overlap and boundary accuracy per patient and class. Implementations are in [utils.py](utils.py), with plotting support in [plot_3d_metrics.py](scripts/plot_3d_metrics.py).
 
 <a id="further-extension-tiled-training"></a>
 ### Further extension: tiled training
-Overlapping tiles preserve image detail without resizing entire slices. The pipeline accounts for overlap and padding during training, combines tile predictions, and restores them to the original CT grid for evaluation. It supports both 2D and 2.5D input and currently requires cross-entropy loss. This extends both preprocessing and training; see [tiled training](docs/tiled_training.md).
+Overlapping tiles preserve image detail without resizing entire slices. The pipeline accounts for overlap and padding during training, combines tile predictions, and restores them to the original CT grid for evaluation. It supports both 2D and 2.5D input and requires cross-entropy loss. Coverage-based weights correct for overlap, while padding contributes no loss. Geometric augmentation is deliberately excluded to preserve tile correspondence and keep the loss interpretation straightforward; the accepted trade-off is less training variability. This extends both preprocessing and training; see [tiled training](docs/tiled_training.md).
