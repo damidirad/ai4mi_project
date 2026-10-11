@@ -141,6 +141,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     train_set = build_dataset('train',
                              root_dir,
+                             augmentation=augmentation,
                              img_transform=partial(img_transform, augmentation=augmentation),
                              gt_transform=partial(gt_transform, K, augmentation=augmentation),
                              tiling=getattr(args, 'tiling', False),

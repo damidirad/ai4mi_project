@@ -1,4 +1,5 @@
 import random
+from contextlib import contextmanager
 
 from PIL import Image
 from torchvision.transforms import InterpolationMode
@@ -23,6 +24,7 @@ class RandomAffinePair:
         self.translate_fraction = translate_fraction
         self.scale_range = scale_range
         self._last_parameters = None
+        self._sample_active = False
 
     def _sample_parameters(self, image: Image.Image):
         width, height = image.size
@@ -47,8 +49,21 @@ class RandomAffinePair:
             fill=0,
         )
 
+    @contextmanager
+    def sample(self):
+        if self._sample_active:
+            raise RuntimeError("Augmentation samples cannot be nested")
+        self._sample_active = True
+        self._last_parameters = None
+        try:
+            yield
+        finally:
+            self._sample_active = False
+            self._last_parameters = None
+
     def transform_image(self, image: Image.Image) -> Image.Image:
-        self._last_parameters = self._sample_parameters(image)
+        if not self._sample_active or self._last_parameters is None:
+            self._last_parameters = self._sample_parameters(image)
         return self._apply(
             image, self._last_parameters, InterpolationMode.BILINEAR
         )

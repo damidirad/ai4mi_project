@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Union
 
@@ -58,7 +59,8 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 class SliceDataset(Dataset):
     def __init__(self, subset, root_dir, img_transform=None,
                  gt_transform=None, augment=False, equalize=False, debug=False,
-                 slices: int = 1):
+                 slices: int = 1, augmentation=None):
+        self.paired_augmentation = augmentation
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
@@ -108,6 +110,11 @@ class SliceDataset(Dataset):
         return torch.cat(imgs, dim=0)
 
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
+        context = self.paired_augmentation.sample() if self.paired_augmentation is not None else nullcontext()
+        with context:
+            return self._get_sample(index)
+
+    def _get_sample(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
 
         img: Tensor = self._load_img_stack(index)
@@ -131,13 +138,14 @@ class TiledDataset(Dataset):
     """Load tiles with explicit patient, slice and tile coordinates."""
 
     def __init__(self, subset, root_dir, img_transform, gt_transform=None,
-                 slices=1, debug=False):
+                 slices=1, debug=False, augmentation=None):
         if subset not in ('train', 'val', 'test'):
             raise ValueError('Unknown dataset split')
         if isinstance(slices, bool) or not isinstance(slices, int) or slices <= 0 or slices % 2 == 0:
             raise ValueError('slices must be a positive odd integer')
         if img_transform is None or (subset != 'test' and gt_transform is None):
             raise ValueError('Image and training/validation label transforms are required')
+        self.paired_augmentation = augmentation
         self.root = Path(root_dir) / subset
         self.test_mode = subset == 'test'
         self.slices = slices
@@ -201,6 +209,11 @@ class TiledDataset(Dataset):
         return array
 
     def __getitem__(self, index):
+        context = self.paired_augmentation.sample() if self.paired_augmentation is not None else nullcontext()
+        with context:
+            return self._get_sample(index)
+
+    def _get_sample(self, index):
         pid, z, tile = self.samples[index]
         record = self.records[pid]
         folder = self.root / 'tiles' / pid
