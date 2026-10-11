@@ -42,7 +42,7 @@ from torch.utils.data import DataLoader
 from functools import partial 
 
 from dataset import SliceDataset
-from data_augmentation import RandomAffinePair
+from data_augmentation import make_augmentation
 
 from dataset import build_dataset
 from ShallowNet import shallowCNN
@@ -129,17 +129,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     slices: int = args.slices
     root_dir = args.data_root / args.dataset
 
-    # Select mild or strong augmentation for training or no augmentation at all
-    augmentation = None
-    if args.augmentation == 'mild':
-        augmentation = RandomAffinePair()
-    elif args.augmentation == 'strong':
-        augmentation = RandomAffinePair(
-            degrees=10,
-            translate_fraction=0.05,
-            scale_range=(0.9, 1.1),
-        )
-
+    augmentation = make_augmentation(args.augmentation)
 
     train_set = build_dataset('train',
                              root_dir,
@@ -208,6 +198,8 @@ def _setup_tiled_training(args):
     from evaluate_tiled import reference_image
     from losses import validate_tiled_loss, inverse_frequency_weights, make_tiled_loss
 
+    if args.augmentation != 'none':
+        raise ValueError('Tiled training does not support augmentation')
     validate_tiled_loss(args.loss)
     if args.epochs <= 0 or args.workers < 0:
         raise ValueError('Require positive epochs and nonnegative workers')
@@ -852,6 +844,8 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+    if args.tiling and args.augmentation != 'none':
+        parser.error('--tiling requires --augmentation none')
     if args.split is not None and not args.evaluate_checkpoint:
         parser.error('--split requires --evaluate-checkpoint')
     if args.slices <= 0 or args.slices % 2 == 0:

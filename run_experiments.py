@@ -58,6 +58,8 @@ def load_config(path):
             raise ValueError('Unknown loss')
         if row['optimizer'] not in ('adam', 'adamw') or row['scheduler'] not in ('none', 'cosine'):
             raise ValueError('Unknown optimizer or scheduler')
+        if row['tiling'] and row['augmentation']:
+            raise ValueError('Tiled training does not support augmentation')
         if row['tiling'] and row['loss'] not in ('ce', 'ce_tiled'):
             raise ValueError('Tiling supports CE only')
         if not row['tiling'] and row['loss'] == 'ce_tiled':
@@ -173,6 +175,8 @@ def dataset_path(row, root):
 
 
 def training_command(config, row, dataset, destination, python, workers):
+    if row['tiling'] and row['augmentation']:
+        raise ValueError('Tiled training does not support augmentation')
     command = [str(python), '-u', str(ROOT/'main.py'), '--dataset', dataset.name,
                '--data_root', str(dataset.parent), '--dest', str(destination),
                '--mode', 'full', '--loss', 'ce' if row['loss'] == 'ce_tiled' else row['loss'],
@@ -185,7 +189,7 @@ def training_command(config, row, dataset, destination, python, workers):
         command += ['--class-weighting', row['class_weighting']]
     if row.get('original_grid_validation'):
         command.append('--original-grid-validation')
-    # Augmented runs are deliberately blocked until an augmentation adapter is implemented.
+    command += ['--augmentation', 'mild' if row['augmentation'] else 'none']
     return command
 
 
@@ -330,7 +334,7 @@ def run(args):
     preparation = preparation_command(config, row, dataset, args.source_dir.absolute(),
                                       args.python.absolute(), getattr(args, 'processes', 4))
     evaluation = evaluation_command(row, dataset, run_dir, args.python.absolute()) if final_comparison else None
-    blocker = 'Augmentation is not integrated; this run must not execute without it' if row['augmentation'] else None
+    blocker = None
     plan = {'configuration':row, 'dataset':str(dataset), 'run_directory':str(run_dir),
             'command':command, 'preparation_command':preparation, 'evaluation_command':evaluation,
             'fold':config['fold'], 'training_seed':config['training_seed'], 'blocked':blocker}

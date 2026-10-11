@@ -14,7 +14,7 @@ separate experiment that is not included in the supplied eight configurations.
 | M4 | Yes | none | No | 3 | CE_DICE | AdamW | cosine | Yes | 20 |
 | M5 | Yes | xy | No | 3 | CE_DICE | AdamW | cosine | Yes | 20 |
 | M6 | Yes | xyz | No | 3 | CE_DICE | AdamW | cosine | Yes | 20 |
-| M7 | Yes | xy | Yes | 3 | CE_TILED | AdamW | cosine | Yes | 3 |
+| M7 | Yes | xy | Yes | 3 | CE_TILED | AdamW | cosine | No | 3 |
 | M8 | Yes | xy | No | 3 | CE_DICE_BOUNDARY | AdamW | cosine | Yes | 20 |
 
 `CE_TILED` maps to `--tiling --loss ce`. M7's three epochs are an explicit
@@ -22,11 +22,14 @@ initial comparison budget, not a claim of equal optimizer updates to the other r
 All configurations use full supervision, split seed 0, fold 0, five validation
 patients and training seed 0.
 
-**M2–M8 are blocked until augmentation is implemented and connected to this
-runner.** Dry runs display the intended configuration and the blocker. The
-training command shown for a blocked run is not an executable augmentation
-recipe. Never remove the blocker without also forwarding the augmentation
-option to training and checking image/label alignment and validation behavior.
+Full-slice configurations M2–M6 and M8 use `--augmentation mild`, sharing one
+random affine transformation across each input stack and label. M1 and the tiled
+configuration M7 use `--augmentation none`. Tiled augmentation is deliberately
+excluded to preserve overlap geometry and coverage-weight interpretation; see
+[the design decision](../docs/tiled_training.md#design-decision-no-data-augmentation-in-tiled-training).
+Validation and checkpoint evaluation are not augmented. M7 therefore differs
+from augmented full-slice runs in both tiling and augmentation, so that comparison
+does not isolate the effect of tiling alone.
 
 ## Prepare the data
 
@@ -93,14 +96,13 @@ allocation requires an explicit account. Paths below are examples of overrides:
 sbatch snellius/initial_comparison.sbatch --source-dir /path/to/raw/scans
 ```
 
-Once augmentation is integrated, the same script can schedule independent jobs:
+The same script can schedule independent jobs:
 
 ```bash
 sbatch --array=0-7%2 snellius/initial_comparison.sbatch
 ```
 
-The `%2` caps concurrent runs at two. Do not submit this full array while the
-augmentation blocker remains. These instructions do not submit jobs themselves.
+The `%2` caps concurrent runs at two. These instructions do not submit jobs themselves.
 
 ## Results and retries
 

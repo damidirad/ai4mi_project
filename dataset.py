@@ -145,7 +145,8 @@ class TiledDataset(Dataset):
             raise ValueError('slices must be a positive odd integer')
         if img_transform is None or (subset != 'test' and gt_transform is None):
             raise ValueError('Image and training/validation label transforms are required')
-        self.paired_augmentation = augmentation
+        if augmentation is not None:
+            raise ValueError('Tiled training does not support augmentation')
         self.root = Path(root_dir) / subset
         self.test_mode = subset == 'test'
         self.slices = slices
@@ -209,11 +210,6 @@ class TiledDataset(Dataset):
         return array
 
     def __getitem__(self, index):
-        context = self.paired_augmentation.sample() if self.paired_augmentation is not None else nullcontext()
-        with context:
-            return self._get_sample(index)
-
-    def _get_sample(self, index):
         pid, z, tile = self.samples[index]
         record = self.records[pid]
         folder = self.root / 'tiles' / pid

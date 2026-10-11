@@ -24,9 +24,7 @@ to select candidates.
 Set `top_candidates.TOP1` and `TOP2` to distinct IDs from `initial_comparison.json` only
 when the candidates are chosen. Their initial null values are intentional;
 placeholder jobs print a blocker and cannot train. The baseline can run while
-these placeholders remain unset. Selected augmented candidates stay blocked
-until augmentation is actually integrated. Preprocessing can be prepared without
-augmentation because augmentation belongs to training.
+these placeholders remain unset. Selected augmented full-slice candidates use the mild online augmentation profile. Tiled candidates use no augmentation. Preprocessing can be prepared without augmentation because augmentation belongs to training.
 
 The baseline is **not M1**. It uses the original ENet with 1 slice, unweighted CE,
 Adam (lr 0.0005, betas 0.9/0.999), no scheduler and no augmentation, HU clipping,
@@ -102,7 +100,7 @@ mkdir -p results/slurm
 # Run the nine baseline jobs, up to four concurrently.
 sbatch snellius/final_comparison.sbatch
 
-# Once candidates, augmentation and datasets are ready, run all 27 jobs.
+# Once candidates and datasets are ready, run all 27 jobs.
 sbatch --array=0-26%4 snellius/final_comparison.sbatch
 ```
 

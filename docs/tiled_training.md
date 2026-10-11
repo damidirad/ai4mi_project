@@ -61,3 +61,11 @@ python main.py --dataset SEGTHOR --data_root data/test_tiled \
 Use the same `--slices` value as training. Predictions are exported as
 `Patient_XX.nii.gz` on the original CT grid. No scores are calculated without
 ground-truth labels.
+
+## Design decision: no data augmentation in tiled training
+
+Data augmentation is disabled for tiled training to preserve spatial consistency between overlapping tiles and maintain interpretable coverage-weighted pixel-wise cross-entropy loss. Independent augmentation would disrupt spatial correspondence and complicate overlap correction.
+
+This simplifies training at the cost of reduced augmentation diversity.
+
+`--tiling` requires `--augmentation none` (default). Full-slice training continues to support `mild` and `strong` augmentation.

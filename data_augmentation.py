@@ -88,3 +88,14 @@ class RandomAffinePair:
             self._apply(image, parameters, InterpolationMode.BILINEAR),
             self._apply(mask, parameters, InterpolationMode.NEAREST),
         )
+
+
+def make_augmentation(profile):
+    if profile == 'none':
+        return None
+    if profile == 'mild':
+        return RandomAffinePair()
+    if profile == 'strong':
+        return RandomAffinePair(degrees=10, translate_fraction=0.05,
+                                scale_range=(0.9, 1.1))
+    raise ValueError(f'Unknown augmentation profile: {profile}')

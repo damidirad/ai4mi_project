@@ -86,7 +86,7 @@
       "loss": "CE_TILED",
       "optimizer": "ADAMW",
       "scheduler": "COSINE",
-      "augmentation": true,
+      "augmentation": false,
       "epochs": 3
     },
     {
