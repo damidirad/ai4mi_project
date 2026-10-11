@@ -32,3 +32,23 @@ python slice_segthor.py --source_dir DATA --dest_dir OUT_XYZ --retains 5 --resam
 
 `stitch.py` assumes the original Z slice count. For XYZ-resampled tiles, use the
 evaluation workflow in the tiled training guide to restore the original CT grid.
+
+## Predict unlabelled test scans
+
+Prepare training data with `--save_metadata` and place test scans at
+`SOURCE/test/Patient_XX.nii.gz`. Reuse the corresponding training metadata:
+
+```bash
+python slice_segthor.py --source_dir SOURCE --dest_dir data/test_full/SEGTHOR \
+  --test-from-metadata data/full_hu_xyz/SEGTHOR/train/metadata
+
+python main.py --dataset SEGTHOR --data_root data/test_full \
+  --dest results/test_full_predictions --split test --slices 3 \
+  --evaluate-checkpoint results/full_model/bestweights.pt --gpu
+```
+
+Use the same `--slices` value as training and adjust paths accordingly.
+Training metadata ensures consistent preprocessing without test-data leakage.
+Predictions are restored to the original CT grid and exported as NIfTI files.
+
+For tiled models, use tiled training metadata and add `--tiling` during inference.

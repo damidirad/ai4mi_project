@@ -178,7 +178,8 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         assert gt_slice.dtype == np.uint8, gt_slice.dtype
         assert set(np.unique(gt_slice)) <= set([0, 63, 126, 189, 252]), np.unique(gt_slice)
 
-        for save_subfolder, data in zip(["img", "gt"], [img_slice, gt_slice]):
+        outputs = [("img", img_slice)] if test_mode else [("img", img_slice), ("gt", gt_slice)]
+        for save_subfolder, data in outputs:
             save_path: Path = Path(dest_path, save_subfolder)
             save_path.mkdir(parents=True, exist_ok=True)
 
@@ -233,19 +234,21 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
     return training_ids, validation_ids, test_ids
 
 
-def prepare_test_tiles(args):
-    """Prepare unlabelled scans using settings saved with the training tiles."""
+def prepare_test_scans(args):
+    """Prepare unlabelled scans using the saved full-slice or tiled training settings."""
     paths = sorted(Path(args.test_from_metadata).glob('*.json'))
     if not paths:
         raise ValueError('No training metadata found')
     records = [load_metadata(path) for path in paths]
     signatures = set()
     for record in records:
-        if record['schema_version'] != 2 or record['split'] != 'train':
-            raise ValueError('Expected tiled training metadata')
+        if record['split'] != 'train':
+            raise ValueError('Expected training metadata')
+        layout = ({'size': record['tiling']['size'], 'stride': record['tiling']['stride']}
+                  if record['schema_version'] == 2 else {'shape': record['output']['shape'][:2]})
         signatures.add(json.dumps({key: record[key] for key in
-            ('resample', 'requested_spacing_mm', 'intensity', 'interpolation')} |
-            {'size': record['tiling']['size'], 'stride': record['tiling']['stride']}, sort_keys=True))
+            ('schema_version', 'resample', 'requested_spacing_mm', 'intensity', 'interpolation')} |
+            layout, sort_keys=True))
     if len(signatures) != 1:
         raise ValueError('Training metadata has inconsistent preprocessing settings')
     record = records[0]
@@ -256,17 +259,20 @@ def prepare_test_tiles(args):
     destination = Path(args.dest_dir)
     if destination.exists():
         raise FileExistsError('Test preprocessing requires a new destination')
+    tiled = record['schema_version'] == 2
+    layout_options = ({'tile_size': record['tiling']['size'],
+                       'tile_stride': record['tiling']['stride']} if tiled else {})
     for scan in scans:
         pid = scan.name[:-7]
-        slice_patient(pid, destination / 'test', source, (256, 256),
+        slice_patient(pid, destination / 'test', source, tuple(record['output']['shape'][:2]),
                       test_mode=True, target_spacing=record['requested_spacing_mm'],
-                      hu_window=record['intensity']['window'], tiling=True,
-                      tile_size=record['tiling']['size'], tile_stride=record['tiling']['stride'])
+                      hu_window=record['intensity']['window'], tiling=tiled,
+                      save_geometry=True, **layout_options)
 
 
 def main(args: argparse.Namespace):
     if getattr(args, 'test_from_metadata', None):
-        return prepare_test_tiles(args)
+        return prepare_test_scans(args)
     src_path: Path = Path(args.source_dir)
     dest_path: Path = Path(args.dest_dir)
 
@@ -328,7 +334,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--test-from-metadata', type=Path,
-                        help='Prepare test scans only, reusing a tiled train/metadata directory')
+                        help='Prepare test scans only, reusing a full-slice or tiled train/metadata directory')
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--tiling', action='store_true',
                         help='Extract XY tiles instead of resizing slices; always saves metadata')
