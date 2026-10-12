@@ -9,6 +9,7 @@
   "max_epochs": 100,
   "early_stopping_patience": 12,
   "early_stopping_min_delta": 0.001,
+  "run_order": "balanced_prefix",
   "folds": [
     1,
     2,

@@ -48,13 +48,21 @@ final comparison run is marked completed.
 ## Run index mapping
 
 Three roles × three folds × three seeds gives 27 jobs. Training seeds are 0, 1, 2.
-Within each row below, indices correspond to seeds 0, 1, 2 in order.
+The configured `balanced_prefix` order keeps the three models adjacent for each
+fold/seed pair, so partial execution still produces comparable model groups. The
+first 12 indices cover 2 folds × 2 seeds × 3 models.
 
-| Role | Fold 1 | Fold 2 | Fold 3 |
-|---|---|---|---|
-| BASELINE | 0, 1, 2 | 3, 4, 5 | 6, 7, 8 |
-| TOP1 | 9, 10, 11 | 12, 13, 14 | 15, 16, 17 |
-| TOP2 | 18, 19, 20 | 21, 22, 23 | 24, 25, 26 |
+| Indices | Fold | Seed | Roles |
+|---|---:|---:|---|
+| 0, 1, 2 | 1 | 0 | BASELINE, TOP1, TOP2 |
+| 3, 4, 5 | 2 | 0 | BASELINE, TOP1, TOP2 |
+| 6, 7, 8 | 1 | 1 | BASELINE, TOP1, TOP2 |
+| 9, 10, 11 | 2 | 1 | BASELINE, TOP1, TOP2 |
+| 12, 13, 14 | 3 | 0 | BASELINE, TOP1, TOP2 |
+| 15, 16, 17 | 3 | 1 | BASELINE, TOP1, TOP2 |
+| 18, 19, 20 | 1 | 2 | BASELINE, TOP1, TOP2 |
+| 21, 22, 23 | 2 | 2 | BASELINE, TOP1, TOP2 |
+| 24, 25, 26 | 3 | 2 | BASELINE, TOP1, TOP2 |
 
 ```bash
 ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
@@ -74,7 +82,7 @@ There is no need to rerun preprocessing for each training seed.
 
 ```bash
 # Prepare one representative run per role/fold. Datasets are reused across seeds.
-for index in 0 3 6 9 12 15 18 21 24; do
+for index in 0 1 2 3 4 5 12 13 14; do
   ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
     --run-index "$index" --prepare-only --processes 4
 done

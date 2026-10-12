@@ -78,7 +78,7 @@ def load_final_comparison(config, path):
     """Expand three roles, patient folds and training seeds into independent jobs."""
     required = {'name', 'initial_comparison_config', 'baseline', 'top_candidates', 'folds',
                 'training_seeds', 'split_seed', 'validation_patients'}
-    optional = {'max_epochs', 'early_stopping_patience', 'early_stopping_min_delta'}
+    optional = {'max_epochs', 'early_stopping_patience', 'early_stopping_min_delta', 'run_order'}
     if not required <= set(config) or not set(config) <= required | optional or config['baseline'] != 'original_enet':
         raise ValueError('Invalid final comparison configuration or baseline')
     if not isinstance(config['name'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', config['name']):
@@ -100,6 +100,9 @@ def load_final_comparison(config, path):
         raise ValueError('early_stopping_patience must be a positive integer')
     if not isinstance(min_delta, (int, float)) or min_delta < 0:
         raise ValueError('early_stopping_min_delta must be nonnegative')
+    run_order = config.get('run_order', 'balanced_prefix')
+    if run_order not in ('balanced_prefix', 'role_fold_seed'):
+        raise ValueError('run_order must be balanced_prefix or role_fold_seed')
     candidates = config['top_candidates']
     if set(candidates) != {'TOP1', 'TOP2'}:
         raise ValueError('Specify TOP1 and TOP2, using null until selected')
@@ -134,8 +137,21 @@ def load_final_comparison(config, path):
                 row['early_stopping_patience'] = patience
                 row['early_stopping_min_delta'] = min_delta
             roles.append(row)
-    config['runs'] = [{'configuration':row, 'fold':fold, 'training_seed':seed}
-                      for row in roles for fold in config['folds'] for seed in config['training_seeds']]
+    if run_order == 'balanced_prefix':
+        folds = config['folds']
+        seeds = config['training_seeds']
+        primary_folds, deferred_folds = folds[:2], folds[2:]
+        primary_seeds, deferred_seeds = seeds[:2], seeds[2:]
+        fold_seed_pairs = (
+            [(fold, seed) for seed in primary_seeds for fold in primary_folds]
+            + [(fold, seed) for seed in primary_seeds for fold in deferred_folds]
+            + [(fold, seed) for seed in deferred_seeds for fold in folds]
+        )
+        config['runs'] = [{'configuration':row, 'fold':fold, 'training_seed':seed}
+                          for fold, seed in fold_seed_pairs for row in roles]
+    else:
+        config['runs'] = [{'configuration':row, 'fold':fold, 'training_seed':seed}
+                          for row in roles for fold in config['folds'] for seed in config['training_seeds']]
     return config
 
 
