@@ -29,8 +29,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+def load_array(path: Path) -> np.ndarray:
+    """Load either a .npy array or the first array stored in a .npz file."""
+    data = np.load(path, allow_pickle=False)
+    if isinstance(data, np.lib.npyio.NpzFile):
+        try:
+            return np.asarray(data[data.files[0]])
+        finally:
+            data.close()
+    return np.asarray(data)
+
+
 def run(args: argparse.Namespace) -> None:
-    metrics: np.ndarray = np.load(args.metric_file)
+    metrics: np.ndarray = load_array(args.metric_file)
     match metrics.ndim:
         case 2:
             E, N = metrics.shape
@@ -64,7 +75,7 @@ def run(args: argparse.Namespace) -> None:
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Plot data over time')
-    parser.add_argument('--metric_file', type=Path, required=True, metavar="METRIC_MODE.npy",
+    parser.add_argument('--metric_file', type=Path, required=True, metavar="METRIC_MODE.npy|npz",
                         help="The metric file to plot.")
     parser.add_argument('--dest', type=Path, metavar="METRIC_MODE.png",
                         help="Optional: save the plot to a .png file")

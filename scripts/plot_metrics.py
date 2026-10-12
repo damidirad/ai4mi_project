@@ -25,8 +25,29 @@ EVAL_CLASSES = {
 }
 
 
+def resolve_metric_path(path):
+    if path.exists():
+        return path
+    alternatives = []
+    if path.suffix == ".npy":
+        alternatives.append(path.with_suffix(".npz"))
+    elif path.suffix == ".npz":
+        alternatives.append(path.with_suffix(".npy"))
+    for alternative in alternatives:
+        if alternative.exists():
+            return alternative
+    raise FileNotFoundError(f"Metric not found: {path}")
+
+
 def load_metric(path):
-    arr = np.load(path)
+    data = np.load(path, allow_pickle=False)
+    if isinstance(data, np.lib.npyio.NpzFile):
+        try:
+            arr = data[data.files[0]]
+        finally:
+            data.close()
+    else:
+        arr = data
 
     # (E, N) -> (E, N, 1)
     if arr.ndim == 2:
@@ -78,7 +99,7 @@ def main():
     parser.add_argument(
         "--metric",
         required=True,
-        help="Metric filename, e.g. dice_val.npy",
+        help="Metric filename, e.g. dice_val.npy or dice_val.npz",
     )
 
     parser.add_argument(
@@ -111,12 +132,7 @@ def main():
         args.result_dirs,
         args.labels,
     ):
-        metric_path = Path(result_dir) / args.metric
-
-        if not metric_path.exists():
-            raise FileNotFoundError(
-                f"Metric not found: {metric_path}"
-            )
+        metric_path = resolve_metric_path(Path(result_dir) / args.metric)
 
         metrics = load_metric(metric_path)
 

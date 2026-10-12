@@ -27,12 +27,13 @@ def load_metrics(metric_dir: Path, metric_name: str):
     """
 
     metric_files = sorted(
-        metric_dir.glob(f"iter*/{metric_name}.npy")
+        list(metric_dir.glob(f"iter*/{metric_name}.npy"))
+        + list(metric_dir.glob(f"iter*/{metric_name}.npz"))
     )
 
     if not metric_files:
         raise FileNotFoundError(
-            f"No {metric_name}.npy files found in {metric_dir}"
+            f"No {metric_name}.npy or {metric_name}.npz files found in {metric_dir}"
         )
 
     epochs = []
@@ -41,7 +42,14 @@ def load_metrics(metric_dir: Path, metric_name: str):
     for file in metric_files:
         epoch = int(file.parent.name.replace("iter", ""))
 
-        metrics = np.load(file)
+        data = np.load(file, allow_pickle=False)
+        if isinstance(data, np.lib.npyio.NpzFile):
+            try:
+                metrics = data[data.files[0]]
+            finally:
+                data.close()
+        else:
+            metrics = data
 
         if metrics.ndim != 2:
             raise ValueError(

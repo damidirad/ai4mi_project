@@ -63,12 +63,33 @@ def finite_mean(values):
     return float(values.mean()) if values.size else np.nan
 
 
-def summarize_npy(path):
-    """Return macro-average of the four foreground-class patient means."""
-    if not path.is_file():
-        raise FileNotFoundError(path)
+def resolve_array_path(path):
+    if path.is_file():
+        return path
+    alternatives = []
+    if path.suffix == ".npy":
+        alternatives.append(path.with_suffix(".npz"))
+    elif path.suffix == ".npz":
+        alternatives.append(path.with_suffix(".npy"))
+    for alternative in alternatives:
+        if alternative.is_file():
+            return alternative
+    raise FileNotFoundError(path)
 
-    data = np.asarray(np.load(path), dtype=float)
+
+def load_array(path):
+    data = np.load(path, allow_pickle=False)
+    if isinstance(data, np.lib.npyio.NpzFile):
+        try:
+            return np.asarray(data[data.files[0]], dtype=float)
+        finally:
+            data.close()
+    return np.asarray(data, dtype=float)
+
+
+def summarize_array(path):
+    """Return macro-average of the four foreground-class patient means."""
+    data = load_array(resolve_array_path(path))
 
     if data.ndim != 2 or data.shape[1] < 5:
         raise ValueError(
@@ -143,9 +164,9 @@ def load_run(results_root, name):
     else:
         best = run_dir / "best_epoch"
         metrics = {
-            "dice": summarize_npy(best / "dice_3d_val.npy"),
-            "assd": summarize_npy(best / "assd_val.npy"),
-            "hd95": summarize_npy(best / "hd95_val.npy"),
+            "dice": summarize_array(best / "dice_3d_val.npy"),
+            "assd": summarize_array(best / "assd_val.npy"),
+            "hd95": summarize_array(best / "hd95_val.npy"),
         }
 
     return {**config, **metrics}
