@@ -366,6 +366,8 @@ def runTraining(args):
         log_lr = torch.zeros(args.epochs)
 
     best_dice: float = -1
+    epochs_without_improvement: int = 0
+    early_stop: bool = False
 
     for e in range(args.epochs):
         log_lr[e] = optimizer.param_groups[0]['lr']
@@ -509,9 +511,12 @@ def runTraining(args):
             history.append({'epoch': e, 'lr': optimizer.param_groups[0]['lr'],
                             'train_ce': tile_losses['train'], 'val_ce': tile_losses['val'],
                             'mean_foreground_dice': score})
-            if score > best_dice:
+            if score > best_dice + args.early_stopping_min_delta:
                 best_dice, best_epoch = score, e
+                epochs_without_improvement = 0
                 _save_training_checkpoint(destination / 'bestweights.pt', net.state_dict())
+            else:
+                epochs_without_improvement += 1
             if scheduler is not None:
                 scheduler.step()
             _save_training_checkpoint(destination / 'last.pt', {
@@ -521,6 +526,14 @@ def runTraining(args):
                 'preprocessing_signature': train_loader.dataset.preprocessing_signature})
             _write_training_json(destination / 'history.json', history)
             print(f"Epoch {e+1}/{args.epochs}: CE={tile_losses['train']:.6f}, original-grid Dice={score:.6f}", flush=True)
+            if (args.early_stopping_patience is not None
+                    and epochs_without_improvement >= args.early_stopping_patience):
+                print(
+                    f">>> Early stopping after epoch {e}: "
+                    f"no improvement for {epochs_without_improvement} epoch(s)"
+                )
+                early_stop = True
+                break
             continue
 
         if m == 'val':
@@ -688,13 +701,14 @@ def runTraining(args):
             scheduler.step()
 
         # I save it at each epochs, in case the code crashes or I decide to stop it early
-        np.savez(args.dest / "lr.npz", log_lr)
-        np.savez(args.dest / "loss_tra.npz", log_loss_tra)
-        np.savez(args.dest / "dice_tra.npz", log_dice_tra)
-        np.savez(args.dest / "loss_val.npz", log_loss_val)
-        np.savez(args.dest / "dice_val.npz", log_dice_val)
-        np.savez(args.dest / "h95_val.npz", log_h95_val)
-        np.savez(args.dest / "assd_val.npz", log_assd_val)
+        completed_epochs = e + 1
+        np.savez(args.dest / "lr.npz", log_lr[:completed_epochs])
+        np.savez(args.dest / "loss_tra.npz", log_loss_tra[:completed_epochs])
+        np.savez(args.dest / "dice_tra.npz", log_dice_tra[:completed_epochs])
+        np.savez(args.dest / "loss_val.npz", log_loss_val[:completed_epochs])
+        np.savez(args.dest / "dice_val.npz", log_dice_val[:completed_epochs])
+        np.savez(args.dest / "h95_val.npz", log_h95_val[:completed_epochs])
+        np.savez(args.dest / "assd_val.npz", log_assd_val[:completed_epochs])
 
         if original_records is not None:
             def original_predictions():
@@ -711,10 +725,11 @@ def runTraining(args):
             current_dice = report['mean_foreground_dice']
             print(f'Original-grid validation Dice: {current_dice:.6f}', flush=True)
 
-        if current_dice > best_dice:
+        if current_dice > best_dice + args.early_stopping_min_delta:
             message = f">>> Improved 3D dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
+            epochs_without_improvement = 0
             with open(args.dest / "best_epoch.txt", 'w') as f:
                 f.write(message)
 
@@ -725,6 +740,17 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+        else:
+            epochs_without_improvement += 1
+
+        if (args.early_stopping_patience is not None
+                and epochs_without_improvement >= args.early_stopping_patience):
+            print(
+                f">>> Early stopping after epoch {e}: "
+                f"no improvement for {epochs_without_improvement} epoch(s)"
+            )
+            early_stop = True
+            break
 
     if tiling:
         net.load_state_dict(torch.load(destination / 'bestweights.pt', map_location=device, weights_only=True))
@@ -733,7 +759,8 @@ def runTraining(args):
         _write_training_json(destination / 'summary.json', {
             'complete': True, 'best_epoch': best_epoch, 'best_validation_dice': best_dice,
             'reloaded_best_dice': final['mean_foreground_dice'],
-            'epochs': args.epochs, 'checkpoint': 'bestweights.pt'})
+            'epochs': args.epochs, 'epochs_ran': len(history), 'early_stopped': early_stop,
+            'checkpoint': 'bestweights.pt'})
         return history
 
 
@@ -865,6 +892,10 @@ def main():
                         help="adam: original setup; adamw: Adam with decoupled weight decay (1e-2).")
     parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
                         help="none: fixed LR; cosine: CosineAnnealingLR from the initial LR to 0 over all epochs.")
+    parser.add_argument('--early-stopping-patience', type=int, default=None,
+                        help='Stop after this many epochs without validation Dice improvement.')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=0.0,
+                        help='Minimum validation Dice improvement required to reset early stopping.')
 
     parser.add_argument('--tiling', action='store_true', help='Use tiles for training and reconstruct full volumes for validation')
     parser.add_argument('--check-data', action='store_true',
@@ -889,6 +920,10 @@ def main():
         parser.error('--slices must be a positive odd integer (1 for 2D; 3, 5, ... for 2.5D)')
     if args.boundary_weight_step <= 0 or args.boundary_weight_max <= 0:
         parser.error('--boundary-weight-step and --boundary-weight-max must be positive')
+    if args.early_stopping_patience is not None and args.early_stopping_patience <= 0:
+        parser.error('--early-stopping-patience must be positive when provided')
+    if args.early_stopping_min_delta < 0:
+        parser.error('--early-stopping-min-delta must be nonnegative')
     if args.evaluate_checkpoint and (args.check_data or args.check_loss):
         parser.error('--evaluate-checkpoint cannot combine with check modes')
     if args.check_loss and not (args.tiling and args.check_data):

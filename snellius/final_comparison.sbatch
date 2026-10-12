@@ -7,11 +7,11 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=180G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-8%4
+#SBATCH --array=0-26%4
 #SBATCH --output=results/slurm/%x-%A_%a.out
 #SBATCH --error=results/slurm/%x-%A_%a.err
 
-# Run one model/fold/seed per task; defaults to the nine baseline runs.
+# Run one model/fold/seed per task: BASELINE, TOP1 and TOP2 over 3 folds x 3 seeds.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
 EXPERIMENT_PYTHON="${EXPERIMENT_PYTHON:-$PWD/ai4mi/bin/python}"

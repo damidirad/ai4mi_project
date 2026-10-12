@@ -4,7 +4,7 @@
 `main.py`. It does not implement training or submit jobs itself. Code and run
 settings are recorded with each attempt. M1 is the reference within this initial comparison,
 not the original unweighted-CE baseline. A faithful original baseline is a
-separate experiment that is not included in the supplied eight configurations.
+separate experiment that is not included in these configurations.
 
 | ID | HU | Resampling | Tiles | Slices | Loss | Optimizer | Scheduler | Augmentation | Epochs |
 |---|---|---|---|---|---|---|---|---|---|
@@ -16,18 +16,19 @@ separate experiment that is not included in the supplied eight configurations.
 | M6 | Yes | xyz | No | 3 | CE_DICE | AdamW | cosine | Yes | 20 |
 | M7 | Yes | xy | Yes | 3 | CE_TILED | AdamW | cosine | No | 3 |
 | M8 | Yes | xy | No | 3 | CE_DICE_BOUNDARY | AdamW | cosine | Yes | 20 |
+| M9 | Yes | none | Yes | 3 | CE_TILED | AdamW | cosine | No | 3 |
 
-`CE_TILED` maps to `--tiling --loss ce`. M7's three epochs are an explicit
+`CE_TILED` maps to `--tiling --loss ce`. M7 and M9's three epochs are an explicit
 initial comparison budget, not a claim of equal optimizer updates to the other runs.
 All configurations use full supervision, split seed 0, fold 0, five validation
 patients and training seed 0.
 
 Full-slice configurations M2–M6 and M8 use `--augmentation mild`, sharing one
 random affine transformation across each input stack and label. M1 and the tiled
-configuration M7 use `--augmentation none`. Tiled augmentation is deliberately
+configurations M7 and M9 use `--augmentation none`. Tiled augmentation is deliberately
 excluded to preserve overlap geometry and coverage-weight interpretation; see
 [the design decision](../docs/tiled_training.md#design-decision-no-data-augmentation-in-tiled-training).
-Validation and checkpoint evaluation are not augmented. M7 therefore differs
+Validation and checkpoint evaluation are not augmented. Tiled runs therefore differ
 from augmented full-slice runs in both tiling and augmentation, so that comparison
 does not isolate the effect of tiling alone.
 
@@ -38,11 +39,11 @@ is `data/segthor_train_full`, extracted from `data/segthor_train_full.zip` if
 needed. An alternative source can be specified with `SEGTHOR_SOURCE=...` and
 must contain `train/Patient_XX/Patient_XX.nii.gz` and `GT.nii.gz`.
 
-Only four prepared datasets are needed for these eight configurations:
+Only five prepared datasets are needed for these configurations:
 
 ```bash
 make data/SEGTHOR_hu data/full_hu_xy/SEGTHOR \
-  data/full_hu_xyz/SEGTHOR data/tiled_hu_xy/SEGTHOR \
+  data/full_hu_xyz/SEGTHOR data/tiled_hu/SEGTHOR data/tiled_hu_xy/SEGTHOR \
   PYTHON=ai4mi/bin/python SEED=0 FOLD=0 RETAINS=5
 ```
 
@@ -64,10 +65,10 @@ From the repository root, inspect a run without touching data or creating files:
 
 ```bash
 ai4mi/bin/python run_experiments.py --run-id M1 --dry-run
-ai4mi/bin/python run_experiments.py --run-id M7 --dry-run
+ai4mi/bin/python run_experiments.py --run-id M9 --dry-run
 ```
 
-Each run can also be selected by its zero-based `--run-index` (0=M1, 7=M8).
+Each run can also be selected by its zero-based `--run-index` (0=M1, 8=M9).
 Execution requires a CUDA GPU and prepared data. No CPU fallback is allowed.
 
 ```bash
@@ -99,7 +100,7 @@ sbatch snellius/initial_comparison.sbatch --source-dir /path/to/raw/scans
 The same script can schedule independent jobs:
 
 ```bash
-sbatch --array=0-7%2 snellius/initial_comparison.sbatch
+sbatch --array=0-8%2 snellius/initial_comparison.sbatch
 ```
 
 The `%2` caps concurrent runs at two. These instructions do not submit jobs themselves.
@@ -130,8 +131,8 @@ such a directory is treated as incomplete, never as a successful run.
 Metrics are labeled with their evaluation grid: current full-slice runs use the
 prepared volume, whereas tiled runs use the original CT grid. Do not automatically
 rank these scores as a fair comparison; common original-grid evaluation is still
-needed before final model selection. This runner does not select winners or
-implement the later multi-seed/fold phase or submission export.
+needed before final model selection. The same runner now also supports the later
+multi-seed/fold phase through `final_comparison.json`.
 
 ## Follow-up comparisons
 

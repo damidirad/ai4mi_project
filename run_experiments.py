@@ -17,6 +17,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 FIELDS = {'id', 'hu_clipping', 'resampling', 'tiling', 'slices', 'loss',
           'optimizer', 'scheduler', 'augmentation', 'epochs'}
+OPTIONAL_FIELDS = {'early_stopping_patience', 'early_stopping_min_delta'}
 
 
 def load_config(path):
@@ -35,7 +36,7 @@ def load_config(path):
         raise ValueError('No configurations supplied')
     ids = set()
     for row in config['configurations']:
-        if set(row) != FIELDS or not isinstance(row['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', row['id']):
+        if not FIELDS <= set(row) or not set(row) <= FIELDS | OPTIONAL_FIELDS or not isinstance(row['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', row['id']):
             raise ValueError('Invalid configuration fields or ID')
         if row['id'] in ids:
             raise ValueError('Duplicate configuration ID')
@@ -47,6 +48,12 @@ def load_config(path):
             raise ValueError('slices must be a positive odd integer')
         if type(row['epochs']) is not int or row['epochs'] <= 0:
             raise ValueError('epochs must be a positive integer')
+        if 'early_stopping_patience' in row and (
+                type(row['early_stopping_patience']) is not int or row['early_stopping_patience'] <= 0):
+            raise ValueError('early_stopping_patience must be a positive integer')
+        if 'early_stopping_min_delta' in row and (
+                not isinstance(row['early_stopping_min_delta'], (int, float)) or row['early_stopping_min_delta'] < 0):
+            raise ValueError('early_stopping_min_delta must be nonnegative')
         if row['resampling'] not in ('none', 'xy', 'xyz'):
             raise ValueError('Invalid resampling mode')
         if any(not isinstance(row[key], str) for key in ('loss', 'optimizer', 'scheduler')):
@@ -71,7 +78,8 @@ def load_final_comparison(config, path):
     """Expand three roles, patient folds and training seeds into independent jobs."""
     required = {'name', 'initial_comparison_config', 'baseline', 'top_candidates', 'folds',
                 'training_seeds', 'split_seed', 'validation_patients'}
-    if set(config) != required or config['baseline'] != 'original_enet':
+    optional = {'max_epochs', 'early_stopping_patience', 'early_stopping_min_delta'}
+    if not required <= set(config) or not set(config) <= required | optional or config['baseline'] != 'original_enet':
         raise ValueError('Invalid final comparison configuration or baseline')
     if not isinstance(config['name'], str) or not re.fullmatch(r'[A-Za-z0-9_-]+', config['name']):
         raise ValueError('Invalid experiment name')
@@ -83,6 +91,15 @@ def load_final_comparison(config, path):
     for key in ('split_seed', 'validation_patients'):
         if type(config[key]) is not int or config[key] < (1 if key == 'validation_patients' else 0):
             raise ValueError(f'Invalid {key}')
+    max_epochs = config.get('max_epochs', 20)
+    patience = config.get('early_stopping_patience')
+    min_delta = config.get('early_stopping_min_delta', 0.0)
+    if type(max_epochs) is not int or max_epochs <= 0:
+        raise ValueError('max_epochs must be a positive integer')
+    if patience is not None and (type(patience) is not int or patience <= 0):
+        raise ValueError('early_stopping_patience must be a positive integer')
+    if not isinstance(min_delta, (int, float)) or min_delta < 0:
+        raise ValueError('early_stopping_min_delta must be nonnegative')
     candidates = config['top_candidates']
     if set(candidates) != {'TOP1', 'TOP2'}:
         raise ValueError('Specify TOP1 and TOP2, using null until selected')
@@ -99,8 +116,11 @@ def load_final_comparison(config, path):
         raise ValueError('Unknown top candidate')
     baseline = {'id':'BASELINE', 'hu_clipping':False, 'resampling':'none', 'tiling':False,
                 'slices':1, 'loss':'ce', 'optimizer':'adam', 'scheduler':'none',
-                'augmentation':False, 'epochs':20, 'class_weighting':'none',
+                'augmentation':False, 'epochs':max_epochs, 'class_weighting':'none',
                 'original_grid_validation':True}
+    if patience is not None:
+        baseline['early_stopping_patience'] = patience
+        baseline['early_stopping_min_delta'] = min_delta
     roles = [baseline]
     for role in ('TOP1', 'TOP2'):
         candidate = candidates[role]
@@ -109,7 +129,10 @@ def load_final_comparison(config, path):
         else:
             row = copy.deepcopy(available[candidate])
             row.update(id=role, source_id=candidate, class_weighting='inverse_frequency',
-                       original_grid_validation=True, epochs=3 if row['tiling'] else 20)
+                       original_grid_validation=True, epochs=max_epochs)
+            if patience is not None:
+                row['early_stopping_patience'] = patience
+                row['early_stopping_min_delta'] = min_delta
             roles.append(row)
     config['runs'] = [{'configuration':row, 'fold':fold, 'training_seed':seed}
                       for row in roles for fold in config['folds'] for seed in config['training_seeds']]
@@ -189,6 +212,9 @@ def training_command(config, row, dataset, destination, python, workers):
         command += ['--class-weighting', row['class_weighting']]
     if row.get('original_grid_validation'):
         command.append('--original-grid-validation')
+    if row.get('early_stopping_patience') is not None:
+        command += ['--early-stopping-patience', str(row['early_stopping_patience']),
+                    '--early-stopping-min-delta', str(row.get('early_stopping_min_delta', 0.0))]
     command += ['--augmentation', 'mild' if row['augmentation'] else 'none']
     return command
 
@@ -258,12 +284,24 @@ def check_dataset(config, row, dataset, source):
 def summarize(destination, row):
     """Read the selected checkpoint's metrics; keep different evaluation grids explicit."""
     import numpy as np
+    def load_array(base):
+        base = Path(base)
+        candidates = [base.with_suffix('.npy'), base.with_suffix('.npz')]
+        for path in candidates:
+            if path.is_file():
+                value = np.load(path, allow_pickle=False)
+                if isinstance(value, np.lib.npyio.NpzFile):
+                    return value[value.files[0]]
+                return value
+        raise ValueError(f'Missing metric file: {base}.npy/.npz')
+
     if not (destination/'bestweights.pt').is_file():
         raise ValueError('Training produced no bestweights.pt')
     if row['tiling']:
         summary = json.loads((destination/'summary.json').read_text())
         history = json.loads((destination/'history.json').read_text())
-        if not summary['complete'] or summary['epochs'] != row['epochs'] or len(history) != row['epochs']:
+        expected = summary.get('epochs_ran', summary['epochs'])
+        if not summary['complete'] or summary['epochs'] != row['epochs'] or len(history) != expected:
             raise ValueError('Incomplete tiled training output')
         if not np.isfinite(summary['reloaded_best_dice']):
             raise ValueError('Nonfinite tiled validation Dice')
@@ -275,10 +313,11 @@ def summarize(destination, row):
     epoch = int(match.group(1))
     if not 0 <= epoch < row['epochs']:
         raise ValueError('Best epoch is outside the configured training budget')
-    for name in ('loss_tra.npy', 'loss_val.npy', 'lr.npy'):
-        if np.load(destination/name, allow_pickle=False).shape[0] != row['epochs']:
+    for name in ('loss_tra', 'loss_val', 'lr'):
+        history = load_array(destination/name)
+        if history.shape[0] > row['epochs'] or history.shape[0] <= epoch:
             raise ValueError('Unexpected training history length')
-    dice = np.load(destination/f'iter{epoch:03d}'/'dice_3d_val.npy', allow_pickle=False)
+    dice = load_array(destination/f'iter{epoch:03d}'/'dice_3d_val')
     if dice.ndim != 2 or dice.shape[1] != 5 or not np.isfinite(dice).all():
         raise ValueError('Invalid per-patient Dice output')
     if row.get('original_grid_validation'):

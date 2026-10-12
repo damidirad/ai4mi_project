@@ -100,6 +100,18 @@
       "scheduler": "COSINE",
       "augmentation": true,
       "epochs": 20
+    },
+    {
+      "id": "M9",
+      "hu_clipping": true,
+      "resampling": "none",
+      "tiling": true,
+      "slices": 3,
+      "loss": "CE_TILED",
+      "optimizer": "ADAMW",
+      "scheduler": "COSINE",
+      "augmentation": false,
+      "epochs": 3
     }
   ]
 }

@@ -21,18 +21,22 @@ to select candidates.
 
 ## Model selection and baseline
 
-Set `top_candidates.TOP1` and `TOP2` to distinct IDs from `initial_comparison.json` only
-when the candidates are chosen. Their initial null values are intentional;
-placeholder jobs print a blocker and cannot train. The baseline can run while
-these placeholders remain unset. Selected augmented full-slice candidates use the mild online augmentation profile. Tiled candidates use no augmentation. Preprocessing can be prepared without augmentation because augmentation belongs to training.
+`top_candidates.TOP1` and `TOP2` are the selected initial-comparison IDs. The
+current setup compares `M5` (`full_hu_xy`) against `M9` (`tiled_hu`), based on
+the exploratory `results/segthor_runs_2` ranking. Selected augmented full-slice
+candidates use the mild online augmentation profile. Tiled candidates use no
+augmentation. Preprocessing can be prepared without augmentation because
+augmentation belongs to training.
 
 The baseline is **not M1**. It uses the original ENet with 1 slice, unweighted CE,
 Adam (lr 0.0005, betas 0.9/0.999), no scheduler and no augmentation, HU clipping,
 resampling or tiling. Full slices are resized to 256x256 as in the initial repo.
 The runner requests `--class-weighting none` to disable the current class weights.
-All runs use full supervision. Full-slice models train for 20 epochs and tiled
-models for 3, as requested. These are not equal optimizer-update budgets. There
-is no early stopping or checkpoint resume.
+All runs use full supervision. The configured training budget is 100 epochs for
+every role, with early stopping after 12 epochs without at least 0.001 mean
+foreground original-grid Dice improvement. These are still not equal optimizer
+update budgets because tiled and full-slice batches expose different training
+examples. Interrupted runs do not resume from checkpoints; launch a new attempt.
 
 All models select their best checkpoint by mean foreground 3D Dice on the
 **original CT grid**. Both layouts use the same Dice, HD95, ASSD, interpolation
@@ -69,14 +73,8 @@ each fold's training patients. The preprocessing command passes `--save_metadata
 There is no need to rerun preprocessing for each training seed.
 
 ```bash
-# Baseline datasets for all three folds.
-for index in 0 3 6; do
-  ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
-    --run-index "$index" --prepare-only --processes 4
-done
-
-# After selecting TOP1 and TOP2, prepare their datasets as well.
-for index in 9 12 15 18 21 24; do
+# Prepare one representative run per role/fold. Datasets are reused across seeds.
+for index in 0 3 6 9 12 15 18 21 24; do
   ai4mi/bin/python run_experiments.py --config experiments/final_comparison.json \
     --run-index "$index" --prepare-only --processes 4
 done
@@ -97,20 +95,15 @@ From the repository root with the Python environment's required modules loaded:
 
 ```bash
 mkdir -p results/slurm
-# Run the nine baseline jobs, up to four concurrently.
+# Run all 27 jobs, up to four concurrently.
 sbatch snellius/final_comparison.sbatch
-
-# Once candidates and datasets are ready, run all 27 jobs.
-sbatch --array=0-26%4 snellius/final_comparison.sbatch
 ```
 
 Each task requests one H100, 16 CPUs, 180 GiB host RAM and six hours, including
 final evaluation. The `%4` limit applies to this array, not unrelated jobs from
-other arrays; do not overlap submissions if four is your total slot limit.
-Twenty-seven six-hour jobs represent at most 162 allocated GPU-hours; with four
-slots they need about seven scheduling waves, excluding queue delays. Actual
-completion time depends on the workloads and scheduler. No jobs are submitted by
-the Python runner itself.
+other arrays; do not overlap submissions if four is your total slot limit. Early
+stopping can reduce actual runtime, but reserve for the full budget. No jobs are
+submitted by the Python runner itself.
 
 Results are isolated by role, fold, seed and attempt:
 

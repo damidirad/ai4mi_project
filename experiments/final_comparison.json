@@ -3,9 +3,12 @@
   "initial_comparison_config": "initial_comparison.json",
   "baseline": "original_enet",
   "top_candidates": {
-    "TOP1": null,
-    "TOP2": null
+    "TOP1": "M5",
+    "TOP2": "M9"
   },
+  "max_epochs": 100,
+  "early_stopping_patience": 12,
+  "early_stopping_min_delta": 0.001,
   "folds": [
     1,
     2,
