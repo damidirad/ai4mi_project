@@ -24,6 +24,12 @@ data/segthor_train_full: data/segthor_train_full.zip
 	unzip -q $< -d $@
 	find $@ -name .DS_Store -delete
 
+## Full test set
+data/segthor_test_full: data/test.zip
+	@echo "$(yellow)unzip $<$(reset)"
+	unzip -q $< -d $@
+	find $@ -name .DS_Store -delete
+
 # Shared settings keep patient splits identical across all 12 combinations.
 PYTHON ?= python
 SEGTHOR_SOURCE ?= data/segthor_train_full

@@ -71,7 +71,7 @@ def volume_metrics(prediction, target, grid):
     if not np.allclose(grid.direction.T @ grid.direction, np.eye(3), rtol=0, atol=1e-6):
         raise ValueError('Surface distances require an orthogonal grid; shear is unsupported')
     result = {}
-    for label in range(1, 5):
+    for label in range(0, 5):
         gt, pred = target == label, prediction == label
         ng, npred = int(gt.sum()), int(pred.sum())
         if ng == 0 and npred == 0:

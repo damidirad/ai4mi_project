@@ -276,7 +276,7 @@ def _setup_tiled_training(args):
 
 def patient_metric_report(gt, pred, dice, hd95, surface_distance):
     report = {}
-    for k in range(1, gt.shape[1]):
+    for k in range(0, gt.shape[1]):
         has_gt, has_pred = bool(gt[:, k].any()), bool(pred[:, k].any())
         status = ('both_empty' if not has_gt and not has_pred else
                   'target_empty' if not has_gt else
@@ -619,16 +619,16 @@ def runTraining(args):
             assd_scores = torch.stack(assd_scores)
 
             # Save [N_patients, K] for this epoch
-            np.save(
-                args.dest / f"iter{e:03d}" / "dice_3d_val.npy",
+            np.savez(
+                args.dest / f"iter{e:03d}" / "dice_3d_val.npz",
                 dice_3d_scores.numpy()
             )
-            np.save(
-                args.dest / f"iter{e:03d}" / "hd95_val.npy",
+            np.savez(
+                args.dest / f"iter{e:03d}" / "hd95_val.npz",
                 hd95_scores.numpy()
             )
-            np.save(
-                args.dest / f"iter{e:03d}" / "assd_val.npy",
+            np.savez(
+                args.dest / f"iter{e:03d}" / "assd_val.npz",
                 assd_scores.numpy()
             )
 
@@ -688,13 +688,13 @@ def runTraining(args):
             scheduler.step()
 
         # I save it at each epochs, in case the code crashes or I decide to stop it early
-        np.save(args.dest / "lr.npy", log_lr)
-        np.save(args.dest / "loss_tra.npy", log_loss_tra)
-        np.save(args.dest / "dice_tra.npy", log_dice_tra)
-        np.save(args.dest / "loss_val.npy", log_loss_val)
-        np.save(args.dest / "dice_val.npy", log_dice_val)
-        np.save(args.dest / "h95_val.npy", log_h95_val)
-        np.save(args.dest / "assd_val.npy", log_assd_val)
+        np.savez(args.dest / "lr.npz", log_lr)
+        np.savez(args.dest / "loss_tra.npz", log_loss_tra)
+        np.savez(args.dest / "dice_tra.npz", log_dice_tra)
+        np.savez(args.dest / "loss_val.npz", log_loss_val)
+        np.savez(args.dest / "dice_val.npz", log_dice_val)
+        np.savez(args.dest / "h95_val.npz", log_h95_val)
+        np.savez(args.dest / "assd_val.npz", log_assd_val)
 
         if original_records is not None:
             def original_predictions():
