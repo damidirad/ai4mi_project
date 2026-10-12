@@ -99,6 +99,9 @@
       "optimizer": "ADAMW",
       "scheduler": "COSINE",
       "augmentation": true,
+      "boundary_include_background": true,
+      "boundary_weight_step": 0.04,
+      "boundary_weight_max": 1.0,
       "epochs": 20
     },
     {

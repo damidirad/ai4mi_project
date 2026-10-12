@@ -13,8 +13,8 @@
 
 # Run one configured experiment per array task; index 0 is M1.
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
-EXPERIMENT_PYTHON="${EXPERIMENT_PYTHON:-$PWD/ai4mi/bin/python}"
+cd /home/scur0147/ai4mi_project
+EXPERIMENT_PYTHON="/home/scur0147/miniconda3/envs/ai4mi/bin/python"
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 export OPENBLAS_NUM_THREADS=1

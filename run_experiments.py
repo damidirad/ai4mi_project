@@ -17,7 +17,8 @@ import sys
 ROOT = Path(__file__).resolve().parent
 FIELDS = {'id', 'hu_clipping', 'resampling', 'tiling', 'slices', 'loss',
           'optimizer', 'scheduler', 'augmentation', 'epochs'}
-OPTIONAL_FIELDS = {'early_stopping_patience', 'early_stopping_min_delta'}
+OPTIONAL_FIELDS = {'early_stopping_patience', 'early_stopping_min_delta',
+                   'boundary_include_background', 'boundary_weight_step', 'boundary_weight_max'}
 
 
 def load_config(path):
@@ -54,6 +55,11 @@ def load_config(path):
         if 'early_stopping_min_delta' in row and (
                 not isinstance(row['early_stopping_min_delta'], (int, float)) or row['early_stopping_min_delta'] < 0):
             raise ValueError('early_stopping_min_delta must be nonnegative')
+        if 'boundary_include_background' in row and type(row['boundary_include_background']) is not bool:
+            raise ValueError('boundary_include_background must be a boolean')
+        for key in ('boundary_weight_step', 'boundary_weight_max'):
+            if key in row and (not isinstance(row[key], (int, float)) or row[key] <= 0):
+                raise ValueError(f'{key} must be positive')
         if row['resampling'] not in ('none', 'xy', 'xyz'):
             raise ValueError('Invalid resampling mode')
         if any(not isinstance(row[key], str) for key in ('loss', 'optimizer', 'scheduler')):
@@ -231,6 +237,12 @@ def training_command(config, row, dataset, destination, python, workers):
     if row.get('early_stopping_patience') is not None:
         command += ['--early-stopping-patience', str(row['early_stopping_patience']),
                     '--early-stopping-min-delta', str(row.get('early_stopping_min_delta', 0.0))]
+    if row.get('boundary_include_background'):
+        command.append('--boundary-include-background')
+    if row.get('boundary_weight_step') is not None:
+        command += ['--boundary-weight-step', str(row['boundary_weight_step'])]
+    if row.get('boundary_weight_max') is not None:
+        command += ['--boundary-weight-max', str(row['boundary_weight_max'])]
     command += ['--augmentation', 'mild' if row['augmentation'] else 'none']
     return command
 

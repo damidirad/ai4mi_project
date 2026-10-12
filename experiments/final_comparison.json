@@ -3,7 +3,7 @@
   "initial_comparison_config": "initial_comparison.json",
   "baseline": "original_enet",
   "top_candidates": {
-    "TOP1": "M5",
+    "TOP1": "M8",
     "TOP2": "M9"
   },
   "max_epochs": 100,

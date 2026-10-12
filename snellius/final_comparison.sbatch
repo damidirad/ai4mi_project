@@ -13,8 +13,8 @@
 
 # Run one model/fold/seed per task: BASELINE, TOP1 and TOP2 over 3 folds x 3 seeds.
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
-EXPERIMENT_PYTHON="${EXPERIMENT_PYTHON:-$PWD/ai4mi/bin/python}"
+cd /home/scur0147/ai4mi_project
+EXPERIMENT_PYTHON="/home/scur0147/miniconda3/envs/ai4mi/bin/python"
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 export OPENBLAS_NUM_THREADS=1
