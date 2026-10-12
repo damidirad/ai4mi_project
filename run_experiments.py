@@ -427,9 +427,13 @@ def run(args):
                     print('Matching completed run already exists; skipping.')
                     return
         raise FileExistsError(f'{run_dir} already exists; inspect it and use a new --attempt number')
-    # The legacy training route otherwise silently falls back to CPU.
+    # The training command uses --gpu; require a real accelerator, but allow
+    # Apple Silicon MPS for local convergence/smoke runs.
     subprocess.run([str(args.python.absolute()), '-c',
-                    'import sys, torch; sys.exit(0 if torch.cuda.is_available() else "A CUDA GPU is required")'], check=True)
+                    ('import sys, torch; '
+                     'has_cuda = torch.cuda.is_available(); '
+                     'has_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available(); '
+                     'sys.exit(0 if (has_cuda or has_mps) else "A CUDA or MPS GPU is required")')], check=True)
     run_dir.mkdir(parents=True, exist_ok=False)
     manifest = {'status':'running', 'identity':identity,
                 'started_at':datetime.now(timezone.utc).isoformat(),
