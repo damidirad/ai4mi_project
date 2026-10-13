@@ -8,7 +8,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from adjustText import adjust_text
+
+try:
+    from adjustText import adjust_text
+except ImportError:
+    adjust_text = None
 
 RUNS = [
     "SEGTHOR", "SEGTHOR_hu",
@@ -32,6 +36,38 @@ RESAMPLING_COLORS = {
 MARKERS = {
     False: "o",  # full slices
     True: "s",   # tiled
+}
+
+LABELS = {
+    "SEGTHOR": "SEGTHOR",
+    "SEGTHOR_hu": "SEGTHOR HU",
+    "full_xy": "full XY",
+    "full_hu_xy": "full HU+XY",
+    "full_xyz": "full XYZ",
+    "full_hu_xyz": "full HU+XYZ",
+    "tiled": "tiled",
+    "tiled_hu": "tiled HU",
+    "tiled_xy": "tiled XY",
+    "tiled_hu_xy": "tiled HU+XY",
+    "tiled_xyz": "tiled XYZ",
+    "tiled_hu_xyz": "tiled HU+XYZ",
+    "baseline": "baseline",
+}
+
+LABEL_OFFSETS = {
+    "SEGTHOR": (0, -18, "center", "top"),
+    "SEGTHOR_hu": (0, 18, "center", "bottom"),
+    "full_xy": (-8, 10, "right", "bottom"),
+    "full_hu_xy": (8, -12, "left", "top"),
+    "full_xyz": (-8, 16, "right", "bottom"),
+    "full_hu_xyz": (0, 36, "center", "bottom"),
+    "tiled": (0, 8, "center", "bottom"),
+    "tiled_hu": (8, 8, "left", "bottom"),
+    "tiled_xy": (0, 8, "center", "bottom"),
+    "tiled_hu_xy": (0, 8, "center", "bottom"),
+    "tiled_xyz": (0, 8, "center", "bottom"),
+    "tiled_hu_xyz": (8, 8, "left", "bottom"),
+    "baseline": (0, 10, "center", "bottom"),
 }
 
 
@@ -153,6 +189,15 @@ def summarize_tiled_json(path):
     return result
 
 
+def load_full_ce_run(run_dir):
+    best = run_dir / "best_epoch"
+    return {
+        "dice": summarize_array(best / "dice_3d_val.npy"),
+        "assd": summarize_array(best / "assd_val.npy"),
+        "hd95": summarize_array(best / "hd95_val.npy"),
+    }
+
+
 def load_run(results_root, name):
     run_dir = results_root / name / "ce"
     config = configuration(name)
@@ -162,14 +207,20 @@ def load_run(results_root, name):
             run_dir / "best_predictions" / "metrics.json"
         )
     else:
-        best = run_dir / "best_epoch"
-        metrics = {
-            "dice": summarize_array(best / "dice_3d_val.npy"),
-            "assd": summarize_array(best / "assd_val.npy"),
-            "hd95": summarize_array(best / "hd95_val.npy"),
-        }
+        metrics = load_full_ce_run(run_dir)
 
     return {**config, **metrics}
+
+
+def load_baseline(baseline_root):
+    metrics = load_full_ce_run(baseline_root / "SEGTHOR" / "ce")
+    return {
+        "name": "baseline",
+        "resampling": "baseline",
+        "tiled": False,
+        "hu": False,
+        **metrics,
+    }
 
 
 def main():
@@ -185,6 +236,20 @@ def main():
         "--output",
         type=Path,
         default=Path("/home/scur0147/ai4mi_project/plots/segthor_run_2_best_epoch_comparison.png"),
+    )
+    parser.add_argument(
+        "--baseline-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional baseline results root. Defaults to a sibling "
+            "'baseline' directory next to --results-dir."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help="Do not add the baseline reference point.",
     )
     parser.add_argument(
         "--assd-weight",
@@ -213,6 +278,7 @@ def main():
         parser.error(f"Results directory does not exist: {root}")
 
     records = []
+    baseline_record = None
 
     for name in RUNS:
         if not (root / name).is_dir():
@@ -238,7 +304,34 @@ def main():
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             warnings.warn(f"Skipping {name}: {exc}")
 
-    if not records:
+    if not args.no_baseline:
+        baseline_root = (
+            args.baseline_dir.expanduser()
+            if args.baseline_dir is not None
+            else root.parent / "baseline"
+        )
+
+        if baseline_root.is_dir():
+            try:
+                baseline_record = load_baseline(baseline_root)
+                baseline_record["boundary_error"] = (
+                    args.assd_weight * baseline_record["assd"]
+                    + (1 - args.assd_weight) * baseline_record["hd95"]
+                )
+
+                if not (
+                    np.isfinite(baseline_record["dice"])
+                    and np.isfinite(baseline_record["boundary_error"])
+                ):
+                    warnings.warn("Skipping baseline: invalid aggregate metrics.")
+                    baseline_record = None
+
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                warnings.warn(f"Skipping baseline: {exc}")
+        else:
+            warnings.warn(f"Missing baseline directory: {baseline_root}")
+
+    if not records and baseline_record is None:
         parser.error("No valid runs found. Check the results directory and file layout.")
 
     fig, ax = plt.subplots(figsize=(14, 8))
@@ -262,31 +355,59 @@ def main():
             zorder=3,
         )
 
+    if baseline_record is not None:
+        ax.scatter(
+            baseline_record["dice"],
+            baseline_record["boundary_error"],
+            marker="*",
+            s=360,
+            color="#D62728",
+            edgecolors="black",
+            linewidths=1.6,
+            alpha=1.0,
+            zorder=6,
+        )
+
     # Create labels ONCE, after all points have been plotted.
     if not args.no_labels:
         texts = []
 
-        for r in records:
-            texts.append(
-                ax.text(
-                    r["dice"],
-                    r["boundary_error"],
-                    r["name"],
-                    fontsize=12,
-                    ha="left",
-                    va="bottom",
-                    zorder=4,
-                )
+        labeled_records = records + ([baseline_record] if baseline_record else [])
+        for r in labeled_records:
+            dx, dy, ha, va = LABEL_OFFSETS.get(
+                r["name"], (8, 8, "left", "bottom")
             )
+            text = ax.annotate(
+                LABELS.get(r["name"], r["name"]),
+                xy=(r["dice"], r["boundary_error"]),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                fontsize=9,
+                ha=ha,
+                va=va,
+                zorder=7,
+                bbox={
+                    "boxstyle": "round,pad=0.15",
+                    "facecolor": "white",
+                    "edgecolor": "none",
+                    "alpha": 0.78,
+                },
+            )
+            texts.append(text)
 
-        adjust_text(
-            texts,
-            ax=ax,
-            expand=(1.5, 1.8),
-            force_text=(1.2, 1.5),
-            force_static=(0.85, 1.1),
-            iter_lim=500,
-        )
+        if adjust_text is not None:
+            adjust_text(
+                texts,
+                ax=ax,
+                expand=(1.5, 1.8),
+                force_text=(1.2, 1.5),
+                force_static=(0.85, 1.1),
+                iter_lim=500,
+            )
+        else:
+            warnings.warn(
+                "adjustText is not installed; labels will not be auto-adjusted."
+            )
     # Optional paired lines: connect configurations differing only in HU.
     """
     by_name = {r["name"]: r for r in records}
@@ -322,6 +443,7 @@ def main():
     ax.set_title("SEGTHOR Best-Epoch Comparison", fontsize=15, pad=14)
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.set_axisbelow(True)
+    ax.margins(x=0.08, y=0.08)
 
     # Separate legends make the encodings easy to interpret.
     resampling_handles = [
@@ -370,6 +492,20 @@ def main():
         ]
     ]
 
+    baseline_handles = []
+    if baseline_record is not None:
+        baseline_handles.append(
+            Line2D(
+                [0], [0],
+                marker="*",
+                linestyle="None",
+                markersize=15,
+                markerfacecolor="#D62728",
+                markeredgecolor="black",
+                label="Baseline",
+            )
+        )
+
     legend1 = ax.legend(
         handles=resampling_handles,
         title="Resampling",
@@ -379,12 +515,31 @@ def main():
     ax.add_artist(legend1)
 
     legend2 = ax.legend(
-        handles=tiling_handles + hu_handles,
-        title="Other preprocessing factors",
-        loc="best",
+        handles=tiling_handles,
+        title="Tiling",
+        loc="upper right",
+        bbox_to_anchor=(0.99, 0.99),
         frameon=True,
-        ncol=2,
     )
+    ax.add_artist(legend2)
+
+    legend3 = ax.legend(
+        handles=hu_handles,
+        title="HU clipping",
+        loc="upper right",
+        bbox_to_anchor=(0.99, 0.80),
+        frameon=True,
+    )
+    ax.add_artist(legend3)
+
+    if baseline_handles:
+        ax.legend(
+            handles=baseline_handles,
+            title="Reference",
+            loc="upper right",
+            bbox_to_anchor=(0.99, 0.58),
+            frameon=True,
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=300, bbox_inches="tight")
@@ -396,7 +551,9 @@ def main():
         f"{'Dice':>8} {'ASSD':>9} {'HD95':>9} {'Weighted':>10}"
     )
 
-    for r in sorted(records, key=lambda item: item["name"]):
+    summary_records = records + ([baseline_record] if baseline_record else [])
+
+    for r in sorted(summary_records, key=lambda item: item["name"]):
         print(
             f"{r['name']:<16} {r['resampling']:<9} "
             f"{str(r['tiled']):<7} {str(r['hu']):<5} "
@@ -417,7 +574,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
 
-            for r in records:
+            for r in summary_records:
                 writer.writerow({
                     "name": r["name"],
                     "resampling": r["resampling"],
