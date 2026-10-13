@@ -1,0 +1,49 @@
+{
+  "group": "26",
+  "run_dir": "/Users/jellesombekke/Downloads/ai4mi_project/results/final_comparison/TOP1/fold_1/seed_2/attempt_001",
+  "dataset_dir": "/Users/jellesombekke/Downloads/ai4mi_project/data/final_comparison/fold_1/full_hu_xy/SEGTHOR",
+  "val_pred_dir": "/Users/jellesombekke/Downloads/ai4mi_project/results/final_comparison/TOP1/fold_1/seed_2/attempt_001/training/original_epoch_026",
+  "test_pred_dir": "/Users/jellesombekke/Downloads/ai4mi_project/results/submission_test/full_hu_xy_TOP1_fold1_seed2/pred",
+  "metrics_json": "/Users/jellesombekke/Downloads/ai4mi_project/results/final_comparison/TOP1/fold_1/seed_2/attempt_001/training/original_epoch_026/metrics.json",
+  "validation_patients": [
+    "Patient_02",
+    "Patient_16",
+    "Patient_21",
+    "Patient_35",
+    "Patient_39"
+  ],
+  "test_patients": [
+    "Patient_41",
+    "Patient_42",
+    "Patient_43",
+    "Patient_44",
+    "Patient_45",
+    "Patient_46",
+    "Patient_47",
+    "Patient_48",
+    "Patient_49",
+    "Patient_50",
+    "Patient_51",
+    "Patient_52",
+    "Patient_53",
+    "Patient_54",
+    "Patient_55",
+    "Patient_56",
+    "Patient_57",
+    "Patient_58",
+    "Patient_59",
+    "Patient_60"
+  ],
+  "metric_npz": [
+    "dice_3d.npz",
+    "hd95.npz",
+    "assd.npz"
+  ],
+  "best_model": "bestmodel-group-26.pkl",
+  "best_weights": "bestweights-group-26.pt",
+  "git_bundle": "group-26.bundle",
+  "git_ref": "master",
+  "git_status_warnings": [
+    "?? submission/"
+  ]
+}
